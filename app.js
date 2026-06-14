@@ -48,14 +48,19 @@
   const LS_SETTINGS = 's2s_settings';
 
   const OCR_SYSTEM =
-    'You transcribe photographed book pages into clean reading text. ' +
-    'Output ONLY the transcribed body text, preserving paragraph breaks. ' +
-    'Do not add commentary, titles, or markdown. Omit running headers, ' +
-    'footers, isolated page numbers, and image captions unless they are ' +
-    'part of the prose. Expand nothing; fix obvious OCR-style artifacts ' +
-    '(broken hyphenation at line ends) but do not paraphrase. If two pages ' +
-    'are visible, transcribe the left page fully, then the right. If the ' +
-    'image contains no readable text, output exactly: [no readable text].';
+    'You are a verbatim transcriber. Reproduce the text on the page EXACTLY ' +
+    'as printed — word for word, character for character. Do NOT paraphrase, ' +
+    'reword, summarize, simplify, modernize, correct grammar/spelling, or ' +
+    'substitute synonyms. Preserve the original wording, spelling, ' +
+    'punctuation, capitalization and numbers; render any italics or other ' +
+    'emphasis as plain text. ' +
+    'The ONLY change you may make: rejoin a single word that is hyphenated ' +
+    'across a line break (e.g. "trans-\\ncription" → "transcription"). ' +
+    'Keep paragraph breaks. Output ONLY the body text — no commentary, ' +
+    'titles, or markdown. Omit running headers, footers, isolated page ' +
+    'numbers, and image captions unless they are part of the prose. If two ' +
+    'pages are visible, transcribe the left page fully, then the right. If ' +
+    'the image has no readable text, output exactly: [no readable text].';
 
   /* ───────────────────────────── state ───────────────────────────── */
   let settings = loadSettings();
@@ -427,7 +432,7 @@
       messages: [
         { role: 'system', content: OCR_SYSTEM },
         { role: 'user', content: [
-          { type: 'text', text: 'Transcribe this book page.' },
+          { type: 'text', text: 'Transcribe this book page verbatim — exact wording, no paraphrasing.' },
           { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
         ] },
       ],
