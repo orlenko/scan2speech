@@ -80,6 +80,7 @@
     batchActions: $('batchActions'), transcribeAll: $('transcribeAll'),
     generateAll: $('generateAll'), clearAll: $('clearAll'),
     batchSummary: $('batchSummary'),
+    main: document.querySelector('main'),
     pagesSection: $('pagesSection'), pages: $('pages'),
     playerBar: $('playerBar'), audio: $('audio'),
     pBigPlay: $('pBigPlay'), pNow: $('pNow'), pSeek: $('pSeek'),
@@ -807,7 +808,17 @@
     const has = buildQueue().length > 0;
     el.playerBar.hidden = !has;
     if (!has && playerCurrent) stopPlayback();
+    syncPlayerSpacer();
     updatePlayerUI();
+  }
+  // Reserve exactly the player's height at the page bottom so the fixed bar
+  // never covers the last page's controls (height varies with safe-area inset
+  // and wrapping, so measure rather than guess).
+  function syncPlayerSpacer() {
+    requestAnimationFrame(() => {
+      const h = el.playerBar.hidden ? 0 : el.playerBar.offsetHeight;
+      el.main.style.paddingBottom = (h + 24) + 'px';
+    });
   }
   function updatePlayerUI() {
     const q = buildQueue();
@@ -892,6 +903,10 @@
       const d = el.audio.duration;
       if (isFinite(d) && d > 0) el.audio.currentTime = (parseInt(el.pSeek.value, 10) / 1000) * d;
     });
+
+    // Keep the bottom spacer in sync when the player wraps / device rotates.
+    window.addEventListener('resize', syncPlayerSpacer);
+    window.addEventListener('orientationchange', syncPlayerSpacer);
   }
 
   /* ════════════════════════ init ════════════════════════ */
@@ -899,6 +914,7 @@
     hydrateSettingsUI();
     refreshKeyStatus();
     wire();
+    syncPlayerSpacer();
     restorePages(); // bring back any saved batch
   }
   document.addEventListener('DOMContentLoaded', init);
