@@ -36,31 +36,13 @@
       <details id="settings">
         <summary>Advanced settings (models &amp; voice)</summary>
         <div class="settings-grid">
-          <label>OCR engine
-            <select id="ocrEngine">
-              <option value="openai">OpenAI vision (generative)</option>
-              <option value="google">Google Cloud Vision (true OCR)</option>
-              <option value="reconcile">Both + reconcile (best quality, costs more)</option>
-            </select>
-            <span class="hint">Reconcile runs Google + OpenAI and merges them with a third pass — needs both keys.</span>
+          <label>Vision model
+            <input id="visionModel" type="text" spellcheck="false" />
+            <span class="hint">Any vision-capable chat model. <code>gpt-5.5</code> (default) tested most faithful on dense non-English pages; <code>gpt-4o</code>/<code>gpt-4.1</code> are good fallbacks. Avoid <code>-mini</code> (misreads).</span>
           </label>
           <label>Page language <span class="hint">(optional)</span>
-            <input id="ocrLang" type="text" spellcheck="false" placeholder="e.g. Ukrainian or uk — blank to auto-detect" />
-            <span class="hint">A hint that sharpens accuracy (language name or ISO code).</span>
-          </label>
-          <label class="full" id="googleKeyRow" hidden>Google Cloud Vision API key
-            <span class="row" style="margin-top:5px">
-              <input id="googleKey" type="password" placeholder="AIza..." autocomplete="off" spellcheck="false" />
-              <button id="toggleGoogleKey" class="ghost" type="button" title="Show / hide">👁</button>
-              <button id="saveGoogleKey" type="button">Save</button>
-              <button id="clearGoogleKey" class="ghost" type="button">Clear</button>
-            </span>
-            <span class="hint" id="googleKeyStatus"></span>
-            <span class="hint">Create it in Google Cloud Console with the <b>Cloud Vision API</b> enabled and no HTTP-referrer restriction (or one allowing this site). Sent straight from your browser, like the OpenAI key.</span>
-          </label>
-          <label id="visionModelRow">Vision model <span class="hint">(OpenAI engine)</span>
-            <input id="visionModel" type="text" spellcheck="false" />
-            <span class="hint">Any vision-capable chat model. <code>gpt-5.5</code> tested most faithful on dense non-English pages; <code>gpt-4o</code>/<code>gpt-4.1</code> are good fallbacks. Avoid <code>-mini</code> (misreads).</span>
+            <input id="ocrLang" type="text" spellcheck="false" placeholder="e.g. Ukrainian — blank to auto-detect" />
+            <span class="hint">A hint that sharpens transcription accuracy.</span>
           </label>
           <label>TTS model
             <select id="ttsModel">
@@ -112,9 +94,6 @@
     </section>
 
     <div class="footer-space"></div>
-    <p class="muted small" style="text-align:center; padding:8px 0 24px">
-      <a href="compare.html">🔬 OCR Lab</a> — compare engines/models side by side (diagnostic)
-    </p>
   </main>
 
   <!-- ───────────────────────── Player ───────────────────────── -->

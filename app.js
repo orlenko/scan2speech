@@ -24,8 +24,6 @@
   const CONFIG = {
     CHAT_ENDPOINT: 'https://api.openai.com/v1/chat/completions',
     SPEECH_ENDPOINT: 'https://api.openai.com/v1/audio/speech',
-    GOOGLE_VISION_ENDPOINT: 'https://vision.googleapis.com/v1/images:annotate',
-    OCR_ENGINE: 'openai',  // 'openai' | 'google'
     // gpt-5.5 tested cleanest on dense non-English OCR (faithful AND well-ordered).
     // Fall back to gpt-4o / gpt-4.1 if a key lacks access; never use -mini (misreads).
     VISION_MODEL: 'gpt-5.5',
@@ -50,8 +48,8 @@
   };
 
   const LS_KEY = 's2s_openai_key';
-  const LS_GOOGLE_KEY = 's2s_google_key';
   const LS_SETTINGS = 's2s_settings';
+  const SETTINGS_VERSION = 2;  // bump to re-migrate stale saved settings
 
   const OCR_SYSTEM =
     'You are a verbatim transcriber. Reproduce the text on the page EXACTLY ' +
@@ -72,28 +70,6 @@
     'pages are visible, transcribe the left page fully, then the right. If ' +
     'the image has no readable text, output exactly: [no readable text].';
 
-  const RECONCILE_SYSTEM =
-    'You are reconciling two independent transcriptions of the SAME single ' +
-    'book page into one correct text.\n' +
-    'SOURCE A is from a dedicated OCR engine: its individual words and spelling ' +
-    'are usually correct, but its line / reading order may be scrambled and it ' +
-    'may contain stray dashes or lines split in odd places.\n' +
-    'SOURCE B is from a vision language model: its reading order and sentence ' +
-    'flow are usually correct, but it sometimes misreads or invents words, ' +
-    'names, or whole phrases.\n' +
-    'Produce the single correct page text:\n' +
-    '- Use SOURCE A as the authority for the exact words, spelling, names and ' +
-    'numbers.\n' +
-    '- Use SOURCE B as the guide for reading order, paragraph flow, and for ' +
-    'joining fragmented lines into sentences.\n' +
-    '- When the two disagree on a word, prefer SOURCE A unless A is clearly ' +
-    'garbled at that spot.\n' +
-    '- CRITICAL: do NOT introduce any word, name, number, or sentence that does ' +
-    'not appear in at least one of the two sources. Do not summarize, ' +
-    'paraphrase, translate, or add anything of your own.\n' +
-    '- Rejoin words hyphenated across line breaks. Keep natural paragraph ' +
-    'breaks. Output ONLY the reconciled page text — no commentary.';
-
   /* ───────────────────────────── state ───────────────────────────── */
   let settings = loadSettings();
   let pages = [];          // ordered page objects
@@ -105,10 +81,6 @@
   const el = {
     apiKey: $('apiKey'), toggleKey: $('toggleKey'), saveKey: $('saveKey'),
     clearKey: $('clearKey'), keyStatus: $('keyStatus'),
-    ocrEngine: $('ocrEngine'), googleKeyRow: $('googleKeyRow'),
-    googleKey: $('googleKey'), toggleGoogleKey: $('toggleGoogleKey'),
-    saveGoogleKey: $('saveGoogleKey'), clearGoogleKey: $('clearGoogleKey'),
-    googleKeyStatus: $('googleKeyStatus'), visionModelRow: $('visionModelRow'),
     visionModel: $('visionModel'), ocrLang: $('ocrLang'), ttsModel: $('ttsModel'),
     ttsModelCustom: $('ttsModelCustom'), voice: $('voice'),
     maxChars: $('maxChars'), ttsInstructions: $('ttsInstructions'),
@@ -171,27 +143,6 @@
       fr.onerror = () => rej(new Error('read failed'));
       fr.readAsDataURL(blob);
     });
-  }
-  async function blobToBase64(blob) {
-    const url = await blobToDataURL(blob);
-    return String(url).slice(String(url).indexOf(',') + 1); // strip data: prefix
-  }
-  // Map a free-text language ("Ukrainian", "uk") to an ISO code for Google's
-  // languageHints. Passes through anything that already looks like a code.
-  const LANG_CODES = {
-    ukrainian: 'uk', russian: 'ru', english: 'en', french: 'fr', german: 'de',
-    spanish: 'es', italian: 'it', portuguese: 'pt', polish: 'pl', dutch: 'nl',
-    czech: 'cs', slovak: 'sk', bulgarian: 'bg', serbian: 'sr', croatian: 'hr',
-    romanian: 'ro', greek: 'el', turkish: 'tr', swedish: 'sv', norwegian: 'no',
-    danish: 'da', finnish: 'fi', hungarian: 'hu', japanese: 'ja', korean: 'ko',
-    chinese: 'zh', arabic: 'ar', hebrew: 'he', hindi: 'hi', ukranian: 'uk',
-  };
-  function mapLang(raw) {
-    const s = (raw || '').trim().toLowerCase();
-    if (!s) return '';
-    if (LANG_CODES[s]) return LANG_CODES[s];
-    if (/^[a-z]{2,3}(-[a-z]{2,4})?$/i.test(s)) return s; // already a code
-    return '';
   }
 
   /* ════════════════════ IndexedDB persistence ════════════════════
@@ -314,15 +265,21 @@
   function loadSettings() {
     let s = {};
     try { s = JSON.parse(localStorage.getItem(LS_SETTINGS) || '{}'); } catch (_) {}
-    return {
-      ocrEngine: (s.ocrEngine === 'google' || s.ocrEngine === 'reconcile') ? s.ocrEngine : CONFIG.OCR_ENGINE,
-      visionModel: s.visionModel || CONFIG.VISION_MODEL,
+    // One-time migration: stale settings adopt the new model default (so users
+    // don't have to touch Advanced settings) and drop removed fields.
+    const migrate = s.v !== SETTINGS_VERSION;
+    if (migrate) { try { localStorage.removeItem('s2s_google_key'); } catch (_) {} }
+    const out = {
+      v: SETTINGS_VERSION,
+      visionModel: migrate ? CONFIG.VISION_MODEL : (s.visionModel || CONFIG.VISION_MODEL),
       ocrLang: s.ocrLang != null ? s.ocrLang : CONFIG.OCR_LANG,
       ttsModel: s.ttsModel || CONFIG.TTS_MODEL,
       voice: s.voice || CONFIG.VOICE,
       maxChars: clampInt(s.maxChars, 500, 4000, CONFIG.MAX_CHARS),
       ttsInstructions: s.ttsInstructions != null ? s.ttsInstructions : CONFIG.TTS_INSTRUCTIONS,
     };
+    if (migrate) { try { localStorage.setItem(LS_SETTINGS, JSON.stringify(out)); } catch (_) {} }
+    return out;
   }
   function clampInt(v, lo, hi, dflt) {
     v = parseInt(v, 10);
@@ -332,7 +289,7 @@
   function saveSettings() {
     const custom = el.ttsModelCustom.value.trim();
     settings = {
-      ocrEngine: (el.ocrEngine.value === 'google' || el.ocrEngine.value === 'reconcile') ? el.ocrEngine.value : 'openai',
+      v: SETTINGS_VERSION,
       visionModel: el.visionModel.value.trim() || CONFIG.VISION_MODEL,
       ocrLang: el.ocrLang.value.trim(),
       ttsModel: custom || el.ttsModel.value,
@@ -343,8 +300,6 @@
     localStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
   }
   function hydrateSettingsUI() {
-    el.ocrEngine.value = settings.ocrEngine;
-    updateEngineUI();
     el.visionModel.value = settings.visionModel;
     el.ocrLang.value = settings.ocrLang;
     el.maxChars.value = settings.maxChars;
@@ -372,22 +327,6 @@
       el.keyStatus.textContent = 'No key saved yet.';
       el.keyStatus.className = 'status';
     }
-  }
-  function getGoogleKey() { return (localStorage.getItem(LS_GOOGLE_KEY) || '').trim(); }
-  function refreshGoogleKeyStatus() {
-    const k = getGoogleKey();
-    el.googleKeyStatus.textContent = k
-      ? '✓ Google Vision key saved (' + k.slice(0, 6) + '…' + k.slice(-4) + ').'
-      : 'No Google Vision key saved yet.';
-    el.googleKeyStatus.style.color = k ? 'var(--good)' : '';
-  }
-  // Show the Google key field only for the Google engine; the OpenAI vision
-  // model field only matters for the OpenAI engine.
-  function updateEngineUI() {
-    const engine = el.ocrEngine.value;
-    el.googleKeyRow.hidden = engine === 'openai';      // shown for google + reconcile
-    el.visionModelRow.style.opacity = engine === 'google' ? '0.5' : ''; // unused only for pure google
-    refreshGoogleKeyStatus();
   }
 
   /* ════════════════════ sentence-boundary chunking ════════════════════
@@ -564,88 +503,6 @@
     return apiFetch(CONFIG.SPEECH_ENDPOINT, body, true); // → Blob
   }
 
-  // Merge a true-OCR transcript (accurate words) with a vision-model transcript
-  // (accurate reading order) into one corrected text. Output is constrained to
-  // words present in one of the two sources, so it can't re-hallucinate.
-  async function reconcileText(aGoogle, bOpenai) {
-    const lang = (settings.ocrLang || '').trim();
-    const sys = RECONCILE_SYSTEM + (lang ? '\nThe page is written in ' + lang + '.' : '');
-    const text = await chatComplete([
-      { role: 'system', content: sys },
-      { role: 'user', content:
-        'SOURCE A (OCR engine):\n' + aGoogle +
-        '\n\n----------\n\nSOURCE B (vision model):\n' + bOpenai +
-        '\n\nReconciled page text:' },
-    ]);
-    return text || bOpenai;
-  }
-
-  // Run both engines, then reconcile. Degrades to whichever single engine
-  // succeeds so a page is never lost.
-  async function transcribeReconcile(base64, dataUrl) {
-    const [g, o] = await Promise.allSettled([
-      getGoogleKey() ? transcribeGoogle(base64)
-        : Promise.reject(new ApiError('No Google Vision key saved.', 0)),
-      transcribeImage(dataUrl),
-    ]);
-    const gv = g.status === 'fulfilled' ? g.value : '';
-    const ov = o.status === 'fulfilled' ? o.value : '';
-    if (gv && ov) return reconcileText(gv, ov);
-    if (ov) { toast('Reconcile: Google OCR unavailable — used OpenAI only.'); return ov; }
-    if (gv) { toast('Reconcile: OpenAI unavailable — used Google only.'); return gv; }
-    throw (o.status === 'rejected' ? o.reason : g.reason);
-  }
-
-  // Google Cloud Vision — a true OCR engine (no generative confabulation).
-  // Called directly from the browser with the user's own API key.
-  async function transcribeGoogle(base64) {
-    const key = getGoogleKey();
-    if (!key) throw new ApiError('No Google Cloud Vision API key saved (Advanced settings).', 0);
-    const hint = mapLang(settings.ocrLang);
-    const body = {
-      requests: [{
-        image: { content: base64 },
-        features: [{ type: 'DOCUMENT_TEXT_DETECTION' }],
-        imageContext: hint ? { languageHints: [hint] } : undefined,
-      }],
-    };
-    const url = CONFIG.GOOGLE_VISION_ENDPOINT + '?key=' + encodeURIComponent(key);
-    for (let attempt = 0; attempt <= CONFIG.MAX_RETRIES; attempt++) {
-      let resp;
-      try {
-        resp = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-      } catch (e) {
-        // Most commonly a CORS/network failure from the browser call.
-        if (attempt < CONFIG.MAX_RETRIES) { await sleep(1000 * Math.pow(2, attempt)); continue; }
-        throw new ApiError('Could not reach Google Vision (network or CORS). ' +
-          'If this persists, the API key likely has an HTTP-referrer restriction ' +
-          'that blocks browser calls.', 0);
-      }
-      if (resp.ok) {
-        const data = await resp.json();
-        const r = data && data.responses && data.responses[0];
-        if (r && r.error) throw new ApiError('Google Vision: ' + (r.error.message || 'failed.'), 0);
-        const text = (r && r.fullTextAnnotation && r.fullTextAnnotation.text || '').trim();
-        return text; // empty string = no text found (handled upstream)
-      }
-      let detail = '';
-      try { const j = await resp.json(); detail = j && j.error && j.error.message || ''; } catch (_) {}
-      const s = resp.status;
-      if ((s === 429 || s >= 500) && attempt < CONFIG.MAX_RETRIES) {
-        await sleep(1000 * Math.pow(2, attempt)); continue;
-      }
-      if (s === 400) throw new ApiError('Google Vision rejected the request (400): ' + (detail || 'bad image or request.'), s);
-      if (s === 403) throw new ApiError('Google Vision 403: key invalid, Cloud Vision API not enabled, billing off, or a key restriction is blocking this site. ' + detail, s);
-      if (s === 429) throw new ApiError('Google Vision quota/rate limit (429). Wait and retry.', s);
-      throw new ApiError('Google Vision error (' + s + ')' + (detail ? ': ' + detail : '.'), s);
-    }
-    throw new ApiError('Google Vision request failed.', 0);
-  }
-
   /* ════════════════════════ image prep ════════════════════════
    * Decode with the browser, downscale the longest side, and re-encode
    * to JPEG. This normalizes formats (incl. HEIC where the browser can
@@ -724,13 +581,8 @@
     if (page.status === 'transcribing') return;
     setStatus(page, 'transcribing');
     try {
-      const text = await ocrLimit(async () => {
-        const b64 = await blobToBase64(page.jpegBlob);
-        const dataUrl = 'data:image/jpeg;base64,' + b64;
-        if (settings.ocrEngine === 'google') return transcribeGoogle(b64);
-        if (settings.ocrEngine === 'reconcile') return transcribeReconcile(b64, dataUrl);
-        return transcribeImage(dataUrl);
-      });
+      const text = await ocrLimit(async () =>
+        transcribeImage(await blobToDataURL(page.jpegBlob)));
       page.text = text;
       revokePageAudio(page);
       page.chunks = null; // text changed → audio invalid
@@ -1052,24 +904,6 @@
     // settings (persist on change)
     [el.visionModel, el.ocrLang, el.ttsModel, el.ttsModelCustom, el.voice, el.maxChars, el.ttsInstructions]
       .forEach((node) => node.addEventListener('change', saveSettings));
-    el.ocrEngine.addEventListener('change', () => { saveSettings(); updateEngineUI(); });
-
-    // Google Cloud Vision key
-    el.saveGoogleKey.onclick = () => {
-      const v = el.googleKey.value.trim();
-      if (!v) { toast('Paste a Google Vision key first.'); return; }
-      localStorage.setItem(LS_GOOGLE_KEY, v);
-      el.googleKey.value = '';
-      refreshGoogleKeyStatus();
-    };
-    el.clearGoogleKey.onclick = () => {
-      localStorage.removeItem(LS_GOOGLE_KEY);
-      el.googleKey.value = '';
-      refreshGoogleKeyStatus();
-    };
-    el.toggleGoogleKey.onclick = () => {
-      el.googleKey.type = el.googleKey.type === 'password' ? 'text' : 'password';
-    };
 
     // upload
     el.dropzone.onclick = () => el.fileInput.click();
