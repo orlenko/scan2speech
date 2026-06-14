@@ -717,7 +717,9 @@
       : '';
 
     li.innerHTML = `
-      <img class="thumb" alt="page ${n}" ${page.thumbUrl ? `src="${page.thumbUrl}"` : ''} />
+      ${page.thumbUrl
+        ? `<a class="thumb-link" href="${page.thumbUrl}" target="_blank" rel="noopener" title="Open full image in a new tab"><img class="thumb" alt="page ${n}" src="${page.thumbUrl}" /><span class="thumb-zoom">⤢</span></a>`
+        : `<img class="thumb" alt="page ${n}" />`}
       <div class="page-body">
         <div class="page-head">
           <span class="page-num">Page ${n}</span>
