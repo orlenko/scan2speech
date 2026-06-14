@@ -87,7 +87,7 @@
     dropzone: $('dropzone'), fileInput: $('fileInput'),
     batchActions: $('batchActions'), transcribeAll: $('transcribeAll'),
     generateAll: $('generateAll'), clearAll: $('clearAll'),
-    batchSummary: $('batchSummary'),
+    batchSummary: $('batchSummary'), progressFill: $('progressFill'),
     main: document.querySelector('main'),
     pagesSection: $('pagesSection'), pages: $('pages'),
     playerBar: $('playerBar'), audio: $('audio'),
@@ -554,6 +554,8 @@
     const files = [...fileList].filter((f) => f.type.startsWith('image/') ||
       /\.(jpe?g|png|webp|heic|heif)$/i.test(f.name));
     if (!files.length) { toast('No images found in that selection.'); return; }
+    const hadNone = pages.length === 0;
+    const haveKey = !!getKey();
     el.pagesSection.hidden = false;
     for (const file of files) {
       const page = {
@@ -562,15 +564,22 @@
       };
       pages.push(page);
       renderPage(page);
-      // Prepare (downscale/encode) immediately so the user sees a thumbnail.
+      // Prepare (downscale/encode) immediately so the user sees a thumbnail,
+      // then auto-start transcription (the "drop photos and listen" flow).
       prepareImage(file).then(({ blob, thumbUrl }) => {
         page.jpegBlob = blob; page.thumbUrl = thumbUrl;
         setStatus(page, 'ready');
         savePage(page);
+        if (haveKey) transcribePage(page);
       }).catch((e) => setStatus(page, 'error', e.message));
     }
     saveOrder();
     updateBatchUI();
+    // Make it obvious something happened: reveal the pages and report.
+    if (hadNone) requestAnimationFrame(() =>
+      el.pagesSection.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    toast(files.length + ' page' + (files.length === 1 ? '' : 's') + ' added' +
+      (haveKey ? ' — transcribing…' : '. Add your API key to transcribe.'));
   }
 
   const ocrLimit = pLimit(CONFIG.OCR_CONCURRENCY);
@@ -756,19 +765,24 @@
 
   function updateBatchUI() {
     el.batchActions.hidden = pages.length === 0;
-    const counts = { total: pages.length, transcribed: 0, audio: 0, err: 0 };
+    const c = { total: pages.length, transcribed: 0, audio: 0, err: 0, transcribing: 0, generating: 0 };
     for (const p of pages) {
-      if (p.text && p.text.trim()) counts.transcribed++;
-      if (p.status === 'audio') counts.audio++;
-      if (p.status === 'error') counts.err++;
+      if (p.text && p.text.trim()) c.transcribed++;
+      if (p.status === 'audio') c.audio++;
+      if (p.status === 'error') c.err++;
+      if (p.status === 'transcribing') c.transcribing++;
+      if (p.status === 'generating') c.generating++;
     }
-    let chars = 0;
-    for (const p of pages) chars += (p.text || '').length;
-    const parts = [`${counts.total} page${counts.total === 1 ? '' : 's'}`];
-    if (counts.transcribed) parts.push(`${counts.transcribed} transcribed`);
-    if (counts.audio) parts.push(`${counts.audio} with audio`);
-    if (counts.err) parts.push(`${counts.err} error${counts.err === 1 ? '' : 's'}`);
-    if (chars) parts.push(`~${chars.toLocaleString()} characters`);
+    // Two-stage progress: each page is half transcription, half audio.
+    const pct = c.total ? Math.round((c.transcribed * 0.5 + c.audio * 0.5) / c.total * 100) : 0;
+    if (el.progressFill) el.progressFill.style.width = pct + '%';
+
+    const parts = [`${c.total} page${c.total === 1 ? '' : 's'}`];
+    if (c.transcribing) parts.push(`${c.transcribing} transcribing…`);
+    if (c.generating) parts.push(`${c.generating} making audio…`);
+    if (c.transcribed) parts.push(`${c.transcribed} transcribed`);
+    if (c.audio) parts.push(`${c.audio} with audio`);
+    if (c.err) parts.push(`${c.err} error${c.err === 1 ? '' : 's'}`);
     el.batchSummary.textContent = parts.join(' · ');
   }
 

@@ -10,24 +10,29 @@
 </head>
 <body>
   <header class="app-header">
-    <div class="wrap">
-      <h1>📖→🔊 Scan2Speech</h1>
-      <p class="tagline">Snap photos of book pages, listen to them read aloud. Your key, your browser, no server.</p>
+    <div class="wrap header-inner">
+      <div class="logo">📖<span class="logo-arrow">→</span>🎧</div>
+      <div>
+        <h1>Scan2Speech</h1>
+        <p class="tagline">Snap photos of book pages, listen to them read aloud. Your key, your browser, no server.</p>
+      </div>
     </div>
   </header>
 
   <main class="wrap">
     <!-- ───────────────────────── API key ───────────────────────── -->
     <section class="card" id="keyCard">
-      <h2>1. OpenAI API key</h2>
-      <p class="muted">
-        Stored only in this browser's <code>localStorage</code>. It is sent directly to
-        <code>api.openai.com</code> and nowhere else. Get one at
-        <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com/api-keys</a>.
+      <div class="card-head">
+        <span class="step">1</span>
+        <h2>Add your OpenAI key</h2>
+      </div>
+      <p class="muted small">
+        Stored only in this browser, sent directly to <code>api.openai.com</code> and nowhere else.
+        Get one at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com/api-keys</a>.
       </p>
       <div class="row">
         <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
-        <button id="toggleKey" class="ghost" type="button" title="Show / hide">👁</button>
+        <button id="toggleKey" class="ghost icon" type="button" title="Show / hide" aria-label="Show or hide key">👁</button>
         <button id="saveKey" type="button">Save</button>
         <button id="clearKey" class="ghost" type="button">Clear</button>
       </div>
@@ -68,28 +73,39 @@
 
     <!-- ───────────────────────── Upload ───────────────────────── -->
     <section class="card" id="uploadCard">
-      <h2>2. Add page photos</h2>
+      <div class="card-head">
+        <span class="step">2</span>
+        <h2>Add page photos</h2>
+      </div>
       <div id="dropzone" class="dropzone" tabindex="0" role="button"
            aria-label="Add photos by clicking or dragging files here">
         <input id="fileInput" type="file" accept="image/*" multiple hidden />
         <div class="dz-inner">
           <div class="dz-icon">📷</div>
-          <p><strong>Tap to choose photos</strong> or drag them here</p>
-          <p class="muted small">JPEG / PNG / WebP. HEIC works on devices whose browser can decode it. Pages are kept in the order you add them.</p>
+          <p class="dz-title"><strong>Tap to choose photos</strong> or drag them here</p>
+          <p class="muted small">They start transcribing automatically. JPEG / PNG / WebP (HEIC where the browser supports it). Page order is preserved.</p>
         </div>
       </div>
-      <div class="row actions" id="batchActions" hidden>
-        <button id="transcribeAll" type="button">Transcribe all</button>
-        <button id="generateAll" type="button" class="ghost">Generate all audio</button>
-        <button id="clearAll" type="button" class="ghost danger">Remove all</button>
-        <span id="batchSummary" class="status push-right"></span>
+      <div class="batch-bar" id="batchActions" hidden>
+        <div class="progress-track" id="progressWrap"><div class="progress-fill" id="progressFill"></div></div>
+        <div class="batch-row">
+          <span id="batchSummary" class="status"></span>
+          <span class="batch-btns">
+            <button id="generateAll" type="button">🎧 Generate all audio</button>
+            <button id="transcribeAll" type="button" class="ghost">Re-transcribe all</button>
+            <button id="clearAll" type="button" class="ghost danger">Remove all</button>
+          </span>
+        </div>
       </div>
     </section>
 
     <!-- ───────────────────────── Pages ───────────────────────── -->
     <section id="pagesSection" hidden>
-      <h2 class="sec-title">3. Review &amp; listen</h2>
-      <p class="muted">Edit any transcription before (or after) generating audio — OCR is good but not perfect. Errors on one page never block the others.</p>
+      <div class="card-head">
+        <span class="step">3</span>
+        <h2>Review &amp; listen</h2>
+      </div>
+      <p class="muted small">Edit any transcription before (or after) generating audio — OCR is good but not perfect. An error on one page never blocks the others.</p>
       <ol id="pages" class="pages"></ol>
     </section>
 
@@ -106,8 +122,8 @@
         <div class="p-times"><span id="pCur">0:00</span><span id="pDur">0:00</span></div>
       </div>
       <div class="player-ctrls">
-        <button id="pPrev" class="ghost" type="button" title="Previous segment">⏮</button>
-        <button id="pNext" class="ghost" type="button" title="Next segment">⏭</button>
+        <button id="pPrev" class="ghost icon" type="button" title="Previous segment">⏮</button>
+        <button id="pNext" class="ghost icon" type="button" title="Next segment">⏭</button>
         <select id="pSpeed" class="speed" title="Playback speed">
           <option value="0.75">0.75×</option>
           <option value="1" selected>1×</option>
