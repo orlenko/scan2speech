@@ -58,9 +58,11 @@ Model ids drift over time, so they're editable in the UI and not buried in code:
 ## Notes & limits
 
 - **Nothing leaves your browser except calls to OpenAI.** No analytics, no proxy.
-- **Audio and transcriptions are in-memory** and not saved across refreshes (only
-  the key and settings persist) — audio is far too large for `localStorage`.
+- **Your batch is saved on this device** (images, text, and audio) in IndexedDB,
+  so a refresh or accidental close won't lose a big run. The key and settings
+  live in `localStorage`. Use **Remove all** to wipe the saved batch, or **Clear**
+  to remove the key.
 - This is a personal bring-your-own-key tool: anyone with access to the device's
-  browser can read the stored key. Use **Clear** to remove it.
+  browser can read the stored key and saved pages.
 
 See [CLAUDE.md](./CLAUDE.md) for the design and contributor rules.

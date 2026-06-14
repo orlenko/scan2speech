@@ -22,9 +22,10 @@ read them — I'll snap a hundred photos, drop them in, and listen while I drive
 - **No npm dependencies.** Use built-in browser APIs (`fetch`, Canvas,
   `Intl.Segmenter`, `<audio>`). Do not pull in OCR libs (Tesseract), the OpenAI
   SDK, or audio libs. The vision model does the OCR.
-- **Never store audio in `localStorage`** (5 MB cap). Audio blobs live in memory
-  as object URLs and are revoked when replaced/removed. Only the API key and
-  small settings are persisted.
+- **Never store audio in `localStorage`** (5 MB cap). Audio, images and text are
+  persisted in **IndexedDB** (store `s2s/pages`, blobs stored directly, object
+  URLs rebuilt on load) so a large batch survives a refresh. `localStorage` holds
+  only the API key (`s2s_openai_key`) and settings (`s2s_settings`).
 - **TTS input is capped** (~4096 chars on `tts-1`/`-hd`, ~2000 tokens on
   `gpt-4o-mini-tts`). Text is chunked on **sentence boundaries** before TTS and
   the segments are queued for continuous playback. Never split mid-word.
@@ -43,7 +44,8 @@ read them — I'll snap a hundred photos, drop them in, and listen while I drive
 | settings / key | Load/save `localStorage` (`s2s_openai_key`, `s2s_settings`). |
 | chunking | `splitSentences` (Intl.Segmenter → regex fallback) + `chunkText`. |
 | OpenAI calls | `apiFetch` (auto-retry 429/5xx/network), `transcribeImage`, `synthesize`, `ApiError` mapping. |
-| image prep | `prepareImage`: decode → downscale to `MAX_IMAGE_DIM` → re-encode JPEG (normalizes formats incl. HEIC where decodable, respects EXIF, shrinks uploads). |
+| image prep | `prepareImage`: decode → downscale to `MAX_IMAGE_DIM` (1568px, OpenAI's vision tiling sweet spot) → re-encode JPEG (normalizes formats incl. HEIC where decodable, respects EXIF, shrinks uploads). |
+| persistence | IndexedDB layer (`openDB`/`idbRun`/`savePage`/`saveOrder`/`restorePages`). Per-page records keyed by uuid; order in a tiny `__order__` record so reordering never rewrites blobs. Degrades to in-memory if IDB/quota fails. |
 | page lifecycle | `addFiles`, `transcribePage`, `generatePageAudio`, batch actions. Concurrency via `pLimit`. |
 | rendering | `renderPage` rebuilds one `<li>`; editing a textarea invalidates that page's audio. |
 | playback | Queue **derived from page order** (`buildQueue`), only `ready` chunks; rebuilt on demand so late pages join while early ones play. |
@@ -58,8 +60,9 @@ text drops back to `transcribed` and discards stale audio.
 - One page failing must never abort the batch. Each page has its own retry.
 - Map and surface: 401 (bad key), 429 (rate/quota), 400 (size/format/model),
   5xx, and network errors — all as clear, non-fatal messages.
-- Refresh keeps the saved key and must not crash on missing audio state (audio
-  is in-memory only, so a refresh simply starts a fresh working set).
+- Refresh keeps the saved key and restores the batch from IndexedDB (images,
+  text, and any generated audio). If IndexedDB is unavailable it must still run,
+  just without persistence — never crash on missing state.
 
 ## Deploy
 

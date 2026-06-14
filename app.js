@@ -31,7 +31,9 @@
     // ~2000-token gpt-4o-mini-tts cap. Tunable in settings.
     MAX_CHARS: 3500,
     TTS_INSTRUCTIONS: 'Read in a clear, natural, unhurried narrator voice.',
-    MAX_IMAGE_DIM: 2048,   // downscale longest side before upload
+    // 1568px is OpenAI's vision tiling sweet spot — larger images get
+    // downscaled server-side anyway, so this trims cost/latency for free.
+    MAX_IMAGE_DIM: 1568,   // downscale longest side before upload
     JPEG_QUALITY: 0.85,
     OCR_CONCURRENCY: 3,    // pages transcribed in parallel
     TTS_CONCURRENCY: 3,    // chunks synthesized in parallel
@@ -58,7 +60,6 @@
   /* ───────────────────────────── state ───────────────────────────── */
   let settings = loadSettings();
   let pages = [];          // ordered page objects
-  let nextId = 1;
   let playerCurrent = null;  // { page, chunk } currently loaded
   let userWantsPlaying = false;
 
@@ -117,6 +118,134 @@
     });
   }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  function uid() {
+    return (crypto && crypto.randomUUID) ? crypto.randomUUID()
+      : 's' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+  }
+  function blobToDataURL(blob) {
+    return new Promise((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = () => res(fr.result);
+      fr.onerror = () => rej(new Error('read failed'));
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  /* ════════════════════ IndexedDB persistence ════════════════════
+   * Pages — downscaled image + text + audio blobs — survive refreshes so a
+   * big batch isn't lost (the spec's endorsed use for IndexedDB; audio is
+   * far too large for localStorage). Blobs are stored directly; object URLs
+   * are rebuilt on load. The API key stays in localStorage, never here.
+   * If IndexedDB is unavailable or the quota is hit, the app degrades
+   * gracefully to in-memory only. */
+  const DB_NAME = 's2s', DB_STORE = 'pages', ORDER_ID = '__order__';
+  let _dbPromise = null;
+  function openDB() {
+    if (_dbPromise) return _dbPromise;
+    _dbPromise = new Promise((resolve) => {
+      if (!('indexedDB' in window)) { resolve(null); return; }
+      let req;
+      try { req = indexedDB.open(DB_NAME, 1); }
+      catch (_) { resolve(null); return; }
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE, { keyPath: 'id' });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => { console.warn('IndexedDB unavailable', req.error); resolve(null); };
+    });
+    return _dbPromise;
+  }
+  async function idbRun(mode, op) {
+    const db = await openDB();
+    if (!db) return null;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, mode);
+      const req = op(tx.objectStore(DB_STORE));
+      tx.oncomplete = () => resolve(req ? req.result : undefined);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  }
+  const idbDelete = (id) => idbRun('readwrite', (s) => s.delete(id));
+  const idbClear = () => idbRun('readwrite', (s) => s.clear());
+  const idbGetAll = () => idbRun('readonly', (s) => s.getAll());
+
+  function serializePage(page) {
+    return {
+      id: page.id,
+      name: page.name,
+      text: page.text || '',
+      jpegBlob: page.jpegBlob || null,
+      chunks: page.chunks ? page.chunks.map((c) => ({
+        text: c.text,
+        status: c.status === 'ready' ? 'ready' : 'pending',
+        blob: c.status === 'ready' ? c.blob : null,
+      })) : null,
+    };
+  }
+  // Persist one page (fire-and-forget; never blocks the UI).
+  function savePage(page) {
+    if (!page.jpegBlob) return; // nothing worth persisting yet
+    idbRun('readwrite', (s) => s.put(serializePage(page)))
+      .catch((e) => console.warn('persist failed', e));
+  }
+  // Page order is a tiny separate record, so reordering never rewrites blobs.
+  function saveOrder() {
+    idbRun('readwrite', (s) => s.put({ id: ORDER_ID, ids: pages.map((p) => p.id) }))
+      .catch(() => {});
+  }
+  const saveDebounced = (() => {
+    const timers = new Map();
+    return (page) => {
+      clearTimeout(timers.get(page.id));
+      timers.set(page.id, setTimeout(() => savePage(page), 700));
+    };
+  })();
+
+  function deriveStatus(page) {
+    if (page.chunks && page.chunks.some((c) => c.status === 'ready')) return 'audio';
+    if ((page.text || '').trim()) return 'transcribed';
+    return 'ready';
+  }
+  async function restorePages() {
+    let all = [];
+    try { all = (await idbGetAll()) || []; } catch (_) {}
+    const orderRec = all.find((r) => r.id === ORDER_ID);
+    const byId = new Map(all.filter((r) => r.id !== ORDER_ID).map((r) => [r.id, r]));
+    // Honour saved order, then append any stragglers not in the order list.
+    const records = [];
+    if (orderRec && Array.isArray(orderRec.ids)) {
+      for (const id of orderRec.ids) { const r = byId.get(id); if (r) { records.push(r); byId.delete(id); } }
+    }
+    for (const r of byId.values()) records.push(r);
+    for (const rec of records) {
+      if (!rec.jpegBlob) { idbDelete(rec.id); continue; }
+      const page = {
+        id: rec.id, name: rec.name || 'page', status: 'ready',
+        text: rec.text || '', error: '', jpegBlob: rec.jpegBlob,
+        thumbUrl: URL.createObjectURL(rec.jpegBlob), chunks: null,
+      };
+      if (rec.chunks && rec.chunks.length) {
+        page.chunks = rec.chunks.map((c) => {
+          const ready = c.status === 'ready' && c.blob;
+          return {
+            text: c.text, status: ready ? 'ready' : 'pending',
+            blob: ready ? c.blob : null,
+            url: ready ? URL.createObjectURL(c.blob) : '', error: '',
+          };
+        });
+      }
+      page.status = deriveStatus(page);
+      pages.push(page);
+    }
+    if (pages.length) {
+      el.pagesSection.hidden = false;
+      renderAllPages();
+      updateBatchUI();
+      updatePlayerVisibility();
+    }
+  }
 
   /* ════════════════════════ settings / key ════════════════════════ */
   function loadSettings() {
@@ -357,13 +486,7 @@
     const blob = await new Promise((res) =>
       canvas.toBlob(res, 'image/jpeg', CONFIG.JPEG_QUALITY));
     if (!blob) throw new Error('Could not process this image.');
-    const dataUrl = await new Promise((res, rej) => {
-      const fr = new FileReader();
-      fr.onload = () => res(fr.result);
-      fr.onerror = () => rej(new Error('read failed'));
-      fr.readAsDataURL(blob);
-    });
-    return { dataUrl, thumbUrl: URL.createObjectURL(blob) };
+    return { blob, thumbUrl: URL.createObjectURL(blob) };
   }
 
   /* ════════════════════════ page lifecycle ════════════════════════ */
@@ -381,17 +504,19 @@
     el.pagesSection.hidden = false;
     for (const file of files) {
       const page = {
-        id: nextId++, name: file.name, status: 'loading',
-        thumbUrl: '', dataUrl: '', text: '', error: '', chunks: null,
+        id: uid(), name: file.name, status: 'loading',
+        thumbUrl: '', jpegBlob: null, text: '', error: '', chunks: null,
       };
       pages.push(page);
       renderPage(page);
       // Prepare (downscale/encode) immediately so the user sees a thumbnail.
-      prepareImage(file).then(({ dataUrl, thumbUrl }) => {
-        page.dataUrl = dataUrl; page.thumbUrl = thumbUrl;
+      prepareImage(file).then(({ blob, thumbUrl }) => {
+        page.jpegBlob = blob; page.thumbUrl = thumbUrl;
         setStatus(page, 'ready');
+        savePage(page);
       }).catch((e) => setStatus(page, 'error', e.message));
     }
+    saveOrder();
     updateBatchUI();
   }
 
@@ -399,15 +524,18 @@
   const ttsLimit = pLimit(CONFIG.TTS_CONCURRENCY);
 
   async function transcribePage(page) {
-    if (!page.dataUrl) { toast('Image still loading — try again in a moment.'); return; }
+    if (!page.jpegBlob) { toast('Image still loading — try again in a moment.'); return; }
     if (page.status === 'transcribing') return;
     setStatus(page, 'transcribing');
     try {
-      const text = await ocrLimit(() => transcribeImage(page.dataUrl));
+      const text = await ocrLimit(async () =>
+        transcribeImage(await blobToDataURL(page.jpegBlob)));
       page.text = text;
+      revokePageAudio(page);
       page.chunks = null; // text changed → audio invalid
       setStatus(page, 'transcribed');
       renderPage(page);
+      savePage(page);
     } catch (e) {
       setStatus(page, 'error', e.message || String(e));
     }
@@ -450,12 +578,13 @@
           ' segments generated. Retry to fill the gaps.');
       }
     }
+    savePage(page);
     updatePlayerVisibility();
   }
 
   function transcribeAll() {
     const todo = pages.filter((p) =>
-      (p.status === 'ready' || p.status === 'error') && p.dataUrl);
+      (p.status === 'ready' || p.status === 'error') && p.jpegBlob);
     if (!todo.length) { toast('Nothing to transcribe.'); return; }
     todo.forEach(transcribePage);
   }
@@ -494,7 +623,7 @@
     const playing = playerCurrent && playerCurrent.page === page;
     li.classList.toggle('playing', !!playing);
 
-    const canTranscribe = !!page.dataUrl && page.status !== 'transcribing' && page.status !== 'loading';
+    const canTranscribe = !!page.jpegBlob && page.status !== 'transcribing' && page.status !== 'loading';
     const canAudio = !!(page.text || '').trim() && page.status !== 'generating';
     const chunkInfo = page.chunks
       ? `<span class="chips">${page.chunks.filter((c) => c.status === 'ready').length}/${page.chunks.length} audio segments</span>`
@@ -533,6 +662,7 @@
           if (page.status === 'audio') page.status = 'transcribed';
           updatePlayerVisibility(); // drop stale segments from the queue
         }
+        saveDebounced(page);
       });
     }
     li.querySelector('.act-transcribe').onclick = () => transcribePage(page);
@@ -557,6 +687,8 @@
     if (page.thumbUrl) URL.revokeObjectURL(page.thumbUrl);
     if (playerCurrent && playerCurrent.page === page) stopPlayback();
     pages = pages.filter((p) => p !== page);
+    idbDelete(page.id);
+    saveOrder(); // remaining page order shifted
     const li = document.getElementById('page-' + page.id);
     if (li) li.remove();
     renderAllPages(); // page numbers shift
@@ -730,7 +862,8 @@
     el.transcribeAll.onclick = transcribeAll;
     el.generateAll.onclick = generateAllAudio;
     el.clearAll.onclick = () => {
-      if (pages.length && !confirm('Remove all pages? Transcriptions and audio are not saved.')) return;
+      if (pages.length && !confirm('Remove all pages? This also clears the copy saved in this browser.')) return;
+      idbClear();
       [...pages].forEach(removePage);
     };
 
@@ -754,13 +887,6 @@
       const d = el.audio.duration;
       if (isFinite(d) && d > 0) el.audio.currentTime = (parseInt(el.pSeek.value, 10) / 1000) * d;
     });
-
-    // don't lose in-memory work silently
-    window.addEventListener('beforeunload', (e) => {
-      if (pages.some((p) => (p.text && p.text.trim()) || p.chunks)) {
-        e.preventDefault(); e.returnValue = '';
-      }
-    });
   }
 
   /* ════════════════════════ init ════════════════════════ */
@@ -768,6 +894,7 @@
     hydrateSettingsUI();
     refreshKeyStatus();
     wire();
+    restorePages(); // bring back any saved batch
   }
   document.addEventListener('DOMContentLoaded', init);
 })();
