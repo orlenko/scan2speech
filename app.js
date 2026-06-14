@@ -88,6 +88,7 @@
     batchActions: $('batchActions'), transcribeAll: $('transcribeAll'),
     generateAll: $('generateAll'), clearAll: $('clearAll'),
     batchSummary: $('batchSummary'), progressFill: $('progressFill'),
+    downloadAll: $('downloadAll'),
     main: document.querySelector('main'),
     pagesSection: $('pagesSection'), pages: $('pages'),
     playerBar: $('playerBar'), audio: $('audio'),
@@ -962,6 +963,7 @@
     // batch
     el.transcribeAll.onclick = transcribeAll;
     el.generateAll.onclick = makeAudiobook;
+    el.downloadAll.onclick = downloadAll;
     el.clearAll.onclick = () => {
       if (pages.length && !confirm('Remove all pages? This also clears the copy saved in this browser.')) return;
       idbClear();
@@ -992,6 +994,102 @@
     // Keep the bottom spacer in sync when the player wraps / device rotates.
     window.addEventListener('resize', syncPlayerSpacer);
     window.addEventListener('orientationchange', syncPlayerSpacer);
+  }
+
+  /* ════════════════════════ download / export ════════════════════════
+   * Bundle transcripts + audio into a single .zip the user can keep offline.
+   * Built with a minimal STORE-method (no compression) ZIP writer so the page
+   * stays dependency-free — audio is already compressed, so STORE is fine. */
+  let _crcTable;
+  function crc32(buf) {
+    if (!_crcTable) {
+      _crcTable = new Uint32Array(256);
+      for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        _crcTable[n] = c >>> 0;
+      }
+    }
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < buf.length; i++) c = _crcTable[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  function makeZip(entries) {
+    const enc = new TextEncoder();
+    const now = new Date();
+    const dosTime = ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xFFFF;
+    const dosDate = (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xFFFF;
+    const body = [], central = [];
+    let offset = 0;
+    for (const e of entries) {
+      const name = enc.encode(e.name);
+      const data = e.bytes;
+      const crc = crc32(data), size = data.length;
+      const lh = new DataView(new ArrayBuffer(30));
+      lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true);
+      lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
+      lh.setUint16(10, dosTime, true); lh.setUint16(12, dosDate, true);
+      lh.setUint32(14, crc, true); lh.setUint32(18, size, true); lh.setUint32(22, size, true);
+      lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
+      body.push(new Uint8Array(lh.buffer), name, data);
+      const ch = new DataView(new ArrayBuffer(46));
+      ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true);
+      ch.setUint16(8, 0x0800, true); ch.setUint16(10, 0, true);
+      ch.setUint16(12, dosTime, true); ch.setUint16(14, dosDate, true);
+      ch.setUint32(16, crc, true); ch.setUint32(20, size, true); ch.setUint32(24, size, true);
+      ch.setUint16(28, name.length, true);
+      ch.setUint32(42, offset, true);
+      central.push(new Uint8Array(ch.buffer), name);
+      offset += 30 + name.length + size;
+    }
+    const cdSize = central.reduce((a, c) => a + c.length, 0);
+    const eo = new DataView(new ArrayBuffer(22));
+    eo.setUint32(0, 0x06054b50, true);
+    eo.setUint16(8, entries.length, true); eo.setUint16(10, entries.length, true);
+    eo.setUint32(12, cdSize, true); eo.setUint32(16, offset, true);
+    return new Blob([...body, ...central, new Uint8Array(eo.buffer)], { type: 'application/zip' });
+  }
+  function triggerDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
+  }
+  async function downloadAll() {
+    const usable = pages.filter((p) => (p.text || '').trim() ||
+      (p.chunks && p.chunks.some((c) => c.status === 'ready')));
+    if (!usable.length) { toast('Nothing to download yet — transcribe or convert first.'); return; }
+    el.downloadAll.disabled = true;
+    toast('Packaging download…');
+    try {
+      const enc = new TextEncoder();
+      const entries = [];
+      const combined = [];
+      let n = 0;
+      for (const p of pages) {
+        n++;
+        const num = String(n).padStart(3, '0');
+        const text = (p.text || '').trim();
+        if (text) {
+          entries.push({ name: `page-${num}.txt`, bytes: enc.encode(text) });
+          combined.push(`===== Page ${n} =====\n\n${text}\n`);
+        }
+        if (p.chunks && p.chunks.some((c) => c.status === 'ready')) {
+          const parts = p.chunks.filter((c) => c.status === 'ready' && c.blob).map((c) => c.blob);
+          const bytes = new Uint8Array(await new Blob(parts, { type: 'audio/mpeg' }).arrayBuffer());
+          entries.push({ name: `page-${num}.mp3`, bytes });
+        }
+      }
+      if (combined.length) entries.push({ name: 'transcript.txt', bytes: enc.encode(combined.join('\n')) });
+      const stamp = new Date().toISOString().slice(0, 10);
+      triggerDownload(makeZip(entries), `scan2speech-${stamp}.zip`);
+      toast('Download ready.');
+    } catch (e) {
+      toast('Could not build the download: ' + (e.message || e));
+    } finally {
+      el.downloadAll.disabled = false;
+    }
   }
 
   /* ════════════════════════ init ════════════════════════ */
