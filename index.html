@@ -36,13 +36,30 @@
       <details id="settings">
         <summary>Advanced settings (models &amp; voice)</summary>
         <div class="settings-grid">
-          <label>Vision model
-            <input id="visionModel" type="text" spellcheck="false" />
-            <span class="hint">Any vision-capable chat model. <code>gpt-4o</code> is far more accurate on non-English / handwriting than <code>gpt-4o-mini</code>.</span>
+          <label>OCR engine
+            <select id="ocrEngine">
+              <option value="openai">OpenAI vision (generative)</option>
+              <option value="google">Google Cloud Vision (true OCR)</option>
+            </select>
+            <span class="hint">Google Vision is a dedicated OCR engine — far less likely to invent text. Needs its own key below.</span>
           </label>
           <label>Page language <span class="hint">(optional)</span>
-            <input id="ocrLang" type="text" spellcheck="false" placeholder="e.g. Ukrainian, French — leave blank to auto-detect" />
-            <span class="hint">A hint that sharpens transcription accuracy.</span>
+            <input id="ocrLang" type="text" spellcheck="false" placeholder="e.g. Ukrainian or uk — blank to auto-detect" />
+            <span class="hint">A hint that sharpens accuracy (language name or ISO code).</span>
+          </label>
+          <label class="full" id="googleKeyRow" hidden>Google Cloud Vision API key
+            <span class="row" style="margin-top:5px">
+              <input id="googleKey" type="password" placeholder="AIza..." autocomplete="off" spellcheck="false" />
+              <button id="toggleGoogleKey" class="ghost" type="button" title="Show / hide">👁</button>
+              <button id="saveGoogleKey" type="button">Save</button>
+              <button id="clearGoogleKey" class="ghost" type="button">Clear</button>
+            </span>
+            <span class="hint" id="googleKeyStatus"></span>
+            <span class="hint">Create it in Google Cloud Console with the <b>Cloud Vision API</b> enabled and no HTTP-referrer restriction (or one allowing this site). Sent straight from your browser, like the OpenAI key.</span>
+          </label>
+          <label id="visionModelRow">Vision model <span class="hint">(OpenAI engine)</span>
+            <input id="visionModel" type="text" spellcheck="false" />
+            <span class="hint">Any vision-capable chat model. <code>gpt-4o</code> is far more accurate on non-English / handwriting than <code>gpt-4o-mini</code>.</span>
           </label>
           <label>TTS model
             <select id="ttsModel">

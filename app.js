@@ -24,6 +24,8 @@
   const CONFIG = {
     CHAT_ENDPOINT: 'https://api.openai.com/v1/chat/completions',
     SPEECH_ENDPOINT: 'https://api.openai.com/v1/audio/speech',
+    GOOGLE_VISION_ENDPOINT: 'https://vision.googleapis.com/v1/images:annotate',
+    OCR_ENGINE: 'openai',  // 'openai' | 'google'
     // gpt-4o (not -mini) — mini misreads non-English / handwriting badly.
     VISION_MODEL: 'gpt-4o',
     OCR_LANG: '',          // optional language hint, e.g. 'Ukrainian'
@@ -47,6 +49,7 @@
   };
 
   const LS_KEY = 's2s_openai_key';
+  const LS_GOOGLE_KEY = 's2s_google_key';
   const LS_SETTINGS = 's2s_settings';
 
   const OCR_SYSTEM =
@@ -79,6 +82,10 @@
   const el = {
     apiKey: $('apiKey'), toggleKey: $('toggleKey'), saveKey: $('saveKey'),
     clearKey: $('clearKey'), keyStatus: $('keyStatus'),
+    ocrEngine: $('ocrEngine'), googleKeyRow: $('googleKeyRow'),
+    googleKey: $('googleKey'), toggleGoogleKey: $('toggleGoogleKey'),
+    saveGoogleKey: $('saveGoogleKey'), clearGoogleKey: $('clearGoogleKey'),
+    googleKeyStatus: $('googleKeyStatus'), visionModelRow: $('visionModelRow'),
     visionModel: $('visionModel'), ocrLang: $('ocrLang'), ttsModel: $('ttsModel'),
     ttsModelCustom: $('ttsModelCustom'), voice: $('voice'),
     maxChars: $('maxChars'), ttsInstructions: $('ttsInstructions'),
@@ -141,6 +148,27 @@
       fr.onerror = () => rej(new Error('read failed'));
       fr.readAsDataURL(blob);
     });
+  }
+  async function blobToBase64(blob) {
+    const url = await blobToDataURL(blob);
+    return String(url).slice(String(url).indexOf(',') + 1); // strip data: prefix
+  }
+  // Map a free-text language ("Ukrainian", "uk") to an ISO code for Google's
+  // languageHints. Passes through anything that already looks like a code.
+  const LANG_CODES = {
+    ukrainian: 'uk', russian: 'ru', english: 'en', french: 'fr', german: 'de',
+    spanish: 'es', italian: 'it', portuguese: 'pt', polish: 'pl', dutch: 'nl',
+    czech: 'cs', slovak: 'sk', bulgarian: 'bg', serbian: 'sr', croatian: 'hr',
+    romanian: 'ro', greek: 'el', turkish: 'tr', swedish: 'sv', norwegian: 'no',
+    danish: 'da', finnish: 'fi', hungarian: 'hu', japanese: 'ja', korean: 'ko',
+    chinese: 'zh', arabic: 'ar', hebrew: 'he', hindi: 'hi', ukranian: 'uk',
+  };
+  function mapLang(raw) {
+    const s = (raw || '').trim().toLowerCase();
+    if (!s) return '';
+    if (LANG_CODES[s]) return LANG_CODES[s];
+    if (/^[a-z]{2,3}(-[a-z]{2,4})?$/i.test(s)) return s; // already a code
+    return '';
   }
 
   /* ════════════════════ IndexedDB persistence ════════════════════
@@ -264,6 +292,7 @@
     let s = {};
     try { s = JSON.parse(localStorage.getItem(LS_SETTINGS) || '{}'); } catch (_) {}
     return {
+      ocrEngine: s.ocrEngine === 'google' ? 'google' : CONFIG.OCR_ENGINE,
       visionModel: s.visionModel || CONFIG.VISION_MODEL,
       ocrLang: s.ocrLang != null ? s.ocrLang : CONFIG.OCR_LANG,
       ttsModel: s.ttsModel || CONFIG.TTS_MODEL,
@@ -280,6 +309,7 @@
   function saveSettings() {
     const custom = el.ttsModelCustom.value.trim();
     settings = {
+      ocrEngine: el.ocrEngine.value === 'google' ? 'google' : 'openai',
       visionModel: el.visionModel.value.trim() || CONFIG.VISION_MODEL,
       ocrLang: el.ocrLang.value.trim(),
       ttsModel: custom || el.ttsModel.value,
@@ -290,6 +320,8 @@
     localStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
   }
   function hydrateSettingsUI() {
+    el.ocrEngine.value = settings.ocrEngine;
+    updateEngineUI();
     el.visionModel.value = settings.visionModel;
     el.ocrLang.value = settings.ocrLang;
     el.maxChars.value = settings.maxChars;
@@ -317,6 +349,22 @@
       el.keyStatus.textContent = 'No key saved yet.';
       el.keyStatus.className = 'status';
     }
+  }
+  function getGoogleKey() { return (localStorage.getItem(LS_GOOGLE_KEY) || '').trim(); }
+  function refreshGoogleKeyStatus() {
+    const k = getGoogleKey();
+    el.googleKeyStatus.textContent = k
+      ? '✓ Google Vision key saved (' + k.slice(0, 6) + '…' + k.slice(-4) + ').'
+      : 'No Google Vision key saved yet.';
+    el.googleKeyStatus.style.color = k ? 'var(--good)' : '';
+  }
+  // Show the Google key field only for the Google engine; the OpenAI vision
+  // model field only matters for the OpenAI engine.
+  function updateEngineUI() {
+    const google = el.ocrEngine.value === 'google';
+    el.googleKeyRow.hidden = !google;
+    el.visionModelRow.style.opacity = google ? '0.5' : '';
+    refreshGoogleKeyStatus();
   }
 
   /* ════════════════════ sentence-boundary chunking ════════════════════
@@ -474,6 +522,56 @@
     return apiFetch(CONFIG.SPEECH_ENDPOINT, body, true); // → Blob
   }
 
+  // Google Cloud Vision — a true OCR engine (no generative confabulation).
+  // Called directly from the browser with the user's own API key.
+  async function transcribeGoogle(base64) {
+    const key = getGoogleKey();
+    if (!key) throw new ApiError('No Google Cloud Vision API key saved (Advanced settings).', 0);
+    const hint = mapLang(settings.ocrLang);
+    const body = {
+      requests: [{
+        image: { content: base64 },
+        features: [{ type: 'DOCUMENT_TEXT_DETECTION' }],
+        imageContext: hint ? { languageHints: [hint] } : undefined,
+      }],
+    };
+    const url = CONFIG.GOOGLE_VISION_ENDPOINT + '?key=' + encodeURIComponent(key);
+    for (let attempt = 0; attempt <= CONFIG.MAX_RETRIES; attempt++) {
+      let resp;
+      try {
+        resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } catch (e) {
+        // Most commonly a CORS/network failure from the browser call.
+        if (attempt < CONFIG.MAX_RETRIES) { await sleep(1000 * Math.pow(2, attempt)); continue; }
+        throw new ApiError('Could not reach Google Vision (network or CORS). ' +
+          'If this persists, the API key likely has an HTTP-referrer restriction ' +
+          'that blocks browser calls.', 0);
+      }
+      if (resp.ok) {
+        const data = await resp.json();
+        const r = data && data.responses && data.responses[0];
+        if (r && r.error) throw new ApiError('Google Vision: ' + (r.error.message || 'failed.'), 0);
+        const text = (r && r.fullTextAnnotation && r.fullTextAnnotation.text || '').trim();
+        return text; // empty string = no text found (handled upstream)
+      }
+      let detail = '';
+      try { const j = await resp.json(); detail = j && j.error && j.error.message || ''; } catch (_) {}
+      const s = resp.status;
+      if ((s === 429 || s >= 500) && attempt < CONFIG.MAX_RETRIES) {
+        await sleep(1000 * Math.pow(2, attempt)); continue;
+      }
+      if (s === 400) throw new ApiError('Google Vision rejected the request (400): ' + (detail || 'bad image or request.'), s);
+      if (s === 403) throw new ApiError('Google Vision 403: key invalid, Cloud Vision API not enabled, billing off, or a key restriction is blocking this site. ' + detail, s);
+      if (s === 429) throw new ApiError('Google Vision quota/rate limit (429). Wait and retry.', s);
+      throw new ApiError('Google Vision error (' + s + ')' + (detail ? ': ' + detail : '.'), s);
+    }
+    throw new ApiError('Google Vision request failed.', 0);
+  }
+
   /* ════════════════════════ image prep ════════════════════════
    * Decode with the browser, downscale the longest side, and re-encode
    * to JPEG. This normalizes formats (incl. HEIC where the browser can
@@ -552,8 +650,12 @@
     if (page.status === 'transcribing') return;
     setStatus(page, 'transcribing');
     try {
-      const text = await ocrLimit(async () =>
-        transcribeImage(await blobToDataURL(page.jpegBlob)));
+      const text = await ocrLimit(async () => {
+        if (settings.ocrEngine === 'google') {
+          return transcribeGoogle(await blobToBase64(page.jpegBlob));
+        }
+        return transcribeImage(await blobToDataURL(page.jpegBlob));
+      });
       page.text = text;
       revokePageAudio(page);
       page.chunks = null; // text changed → audio invalid
@@ -875,6 +977,24 @@
     // settings (persist on change)
     [el.visionModel, el.ocrLang, el.ttsModel, el.ttsModelCustom, el.voice, el.maxChars, el.ttsInstructions]
       .forEach((node) => node.addEventListener('change', saveSettings));
+    el.ocrEngine.addEventListener('change', () => { saveSettings(); updateEngineUI(); });
+
+    // Google Cloud Vision key
+    el.saveGoogleKey.onclick = () => {
+      const v = el.googleKey.value.trim();
+      if (!v) { toast('Paste a Google Vision key first.'); return; }
+      localStorage.setItem(LS_GOOGLE_KEY, v);
+      el.googleKey.value = '';
+      refreshGoogleKeyStatus();
+    };
+    el.clearGoogleKey.onclick = () => {
+      localStorage.removeItem(LS_GOOGLE_KEY);
+      el.googleKey.value = '';
+      refreshGoogleKeyStatus();
+    };
+    el.toggleGoogleKey.onclick = () => {
+      el.googleKey.type = el.googleKey.type === 'password' ? 'text' : 'password';
+    };
 
     // upload
     el.dropzone.onclick = () => el.fileInput.click();

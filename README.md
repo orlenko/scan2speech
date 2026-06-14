@@ -50,7 +50,15 @@ It's three static files (`index.html`, `styles.css`, `app.js`) — no build.
 
 Model ids drift over time, so they're editable in the UI and not buried in code:
 
-- **Vision model** — any vision-capable chat model (default `gpt-4o-mini`).
+- **OCR engine** — *OpenAI vision* (default, generative — fast but can occasionally
+  invent text on dense/blurry pages) or *Google Cloud Vision* (a true OCR engine:
+  no hallucination, excellent on non-English/Cyrillic). Google Vision needs its
+  own API key (Cloud Vision API enabled, no blocking referrer restriction); it's
+  sent straight from your browser like the OpenAI key. TTS always uses OpenAI.
+- **Page language** — optional hint (name or ISO code, e.g. `Ukrainian` / `uk`)
+  that sharpens accuracy on either engine.
+- **Vision model** (OpenAI engine) — any vision-capable chat model (default
+  `gpt-4o`; far more faithful than `gpt-4o-mini`).
 - **TTS model** — `gpt-4o-mini-tts` (default), `tts-1`, `tts-1-hd`, or a custom id.
 - **Voice**, **max characters per chunk**, and **voice instructions**
   (steerable tone, `gpt-4o-mini-tts` only).

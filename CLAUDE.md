@@ -16,9 +16,15 @@ read them — I'll snap a hundred photos, drop them in, and listen while I drive
 - **Static only.** Plain `index.html` + `styles.css` + `app.js`. No build step,
   no framework, no bundler, no server, no proxy. It must run from a `file://`
   open and from GitHub Pages unchanged.
-- **Bring-your-own-key.** The key lives only in `localStorage` and is sent
-  directly to `api.openai.com`. Never add a proxy or any hosted secret. This is
-  intentional and acceptable for a personal tool.
+- **Bring-your-own-key.** The OpenAI key lives only in `localStorage`
+  (`s2s_openai_key`) and is sent directly to `api.openai.com`. An optional
+  second key for the Google Cloud Vision OCR engine (`s2s_google_key`) is sent
+  directly to `vision.googleapis.com`. Never add a proxy or any hosted secret.
+  This is intentional and acceptable for a personal tool.
+- **OCR engine is pluggable.** Default is OpenAI vision (generative — fast but
+  can confabulate on dense/low-res text). Google Cloud Vision is a true OCR
+  engine (no hallucination, strong multilingual incl. Cyrillic), selectable in
+  Advanced settings. TTS always uses OpenAI. Keep both browser-direct.
 - **No npm dependencies.** Use built-in browser APIs (`fetch`, Canvas,
   `Intl.Segmenter`, `<audio>`). Do not pull in OCR libs (Tesseract), the OpenAI
   SDK, or audio libs. The vision model does the OCR.
@@ -43,7 +49,8 @@ read them — I'll snap a hundred photos, drop them in, and listen while I drive
 | `CONFIG` | The one place for endpoints, model ids, limits, voices, concurrency. |
 | settings / key | Load/save `localStorage` (`s2s_openai_key`, `s2s_settings`). |
 | chunking | `splitSentences` (Intl.Segmenter → regex fallback) + `chunkText`. |
-| OpenAI calls | `apiFetch` (auto-retry 429/5xx/network), `transcribeImage`, `synthesize`, `ApiError` mapping. |
+| OCR calls | `transcribeImage` (OpenAI vision, verbatim/no-fabricate prompt + language hint) or `transcribeGoogle` (Cloud Vision `DOCUMENT_TEXT_DETECTION`, browser-direct with `?key=`). `apiFetch` auto-retries OpenAI 429/5xx/network. |
+| TTS calls | `synthesize` (OpenAI `/audio/speech`), `ApiError` mapping. |
 | image prep | `prepareImage`: decode → downscale to `MAX_IMAGE_DIM` (1568px, OpenAI's vision tiling sweet spot) → re-encode JPEG (normalizes formats incl. HEIC where decodable, respects EXIF, shrinks uploads). |
 | persistence | IndexedDB layer (`openDB`/`idbRun`/`savePage`/`saveOrder`/`restorePages`). Per-page records keyed by uuid; order in a tiny `__order__` record so reordering never rewrites blobs. Degrades to in-memory if IDB/quota fails. |
 | page lifecycle | `addFiles`, `transcribePage`, `generatePageAudio`, batch actions. Concurrency via `pLimit`. |
