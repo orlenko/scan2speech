@@ -566,11 +566,11 @@
       renderPage(page);
       // Prepare (downscale/encode) immediately so the user sees a thumbnail,
       // then auto-start transcription (the "drop photos and listen" flow).
-      prepareImage(file).then(({ blob, thumbUrl }) => {
+      page._prep = prepareImage(file).then(({ blob, thumbUrl }) => {
         page.jpegBlob = blob; page.thumbUrl = thumbUrl;
         setStatus(page, 'ready');
         savePage(page);
-        if (haveKey) transcribePage(page);
+        if (haveKey) startTranscribe(page);
       }).catch((e) => setStatus(page, 'error', e.message));
     }
     saveOrder();
@@ -644,19 +644,43 @@
     updatePlayerVisibility();
   }
 
-  function transcribeAll() {
-    const todo = pages.filter((p) =>
-      (p.status === 'ready' || p.status === 'error') && p.jpegBlob);
-    if (!todo.length) { toast('Nothing to transcribe.'); return; }
-    todo.forEach(transcribePage);
+  // One in-flight transcription per page; callers can await the shared promise
+  // (so e.g. "Convert all" can wait on a transcription auto-started at upload).
+  function startTranscribe(page) {
+    if (page._txp) return page._txp;
+    page._txp = transcribePage(page).finally(() => { page._txp = null; });
+    return page._txp;
   }
-  function generateAllAudio() {
-    const todo = pages.filter((p) =>
-      (p.text || '').trim() &&
-      p.status !== 'generating' &&
-      !(p.status === 'audio' && p.chunks && p.chunks.every((c) => c.status === 'ready')));
-    if (!todo.length) { toast('No pages ready for audio yet. Transcribe first.'); return; }
-    todo.forEach(generatePageAudio);
+
+  function transcribeAll() {
+    const todo = pages.filter((p) => p.jpegBlob);
+    if (!todo.length) { toast('Add some photos first.'); return; }
+    todo.forEach(startTranscribe);
+  }
+
+  // One-tap pipeline: for every page, wait for its image, transcribe if needed
+  // (or wait for an in-flight transcription), then make audio — quietly and in
+  // order. Per-page concurrency is throttled inside the OCR/TTS limiters.
+  async function makeAudiobook() {
+    if (!pages.length) { toast('Add some photos first.'); return; }
+    if (!getKey()) { toast('Add your OpenAI API key first.'); return; }
+    toast('Converting ' + pages.length + ' page' + (pages.length === 1 ? '' : 's') + ' to audio…');
+    await Promise.all(pages.map(audiobookPage));
+    const ok = pages.filter((p) => p.status === 'audio').length;
+    if (ok) toast(ok + ' page' + (ok === 1 ? '' : 's') + ' ready — tap ▶ to listen.');
+  }
+  async function audiobookPage(page) {
+    try {
+      if (page._prep) { try { await page._prep; } catch (_) {} } // wait for the image
+      if (!page.jpegBlob) return;                                // image couldn't load
+      if (!(page.text || '').trim() || page.status === 'transcribing') {
+        await startTranscribe(page);
+      }
+      if (!(page.text || '').trim()) return;                     // transcription failed → skip
+      const hasAudio = page.chunks && page.chunks.length &&
+        page.chunks.every((c) => c.status === 'ready');
+      if (!hasAudio) await generatePageAudio(page);
+    } catch (_) { /* per-page errors already surfaced on the card */ }
   }
 
   /* ════════════════════════ rendering ════════════════════════ */
@@ -727,7 +751,7 @@
         saveDebounced(page);
       });
     }
-    li.querySelector('.act-transcribe').onclick = () => transcribePage(page);
+    li.querySelector('.act-transcribe').onclick = () => startTranscribe(page);
     li.querySelector('.act-audio').onclick = () => generatePageAudio(page);
     const playBtn = li.querySelector('.act-play');
     if (playBtn) playBtn.onclick = () => playFromPage(page);
@@ -937,7 +961,7 @@
 
     // batch
     el.transcribeAll.onclick = transcribeAll;
-    el.generateAll.onclick = generateAllAudio;
+    el.generateAll.onclick = makeAudiobook;
     el.clearAll.onclick = () => {
       if (pages.length && !confirm('Remove all pages? This also clears the copy saved in this browser.')) return;
       idbClear();
