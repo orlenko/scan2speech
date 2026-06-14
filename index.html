@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark light" />
+  <title>Scan2Speech — photos of book pages → audio</title>
+  <meta name="description" content="Turn photos of physical book pages into listenable audio with your own OpenAI API key. No server, no account — runs entirely in your browser." />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="wrap">
+      <h1>📖→🔊 Scan2Speech</h1>
+      <p class="tagline">Snap photos of book pages, listen to them read aloud. Your key, your browser, no server.</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <!-- ───────────────────────── API key ───────────────────────── -->
+    <section class="card" id="keyCard">
+      <h2>1. OpenAI API key</h2>
+      <p class="muted">
+        Stored only in this browser's <code>localStorage</code>. It is sent directly to
+        <code>api.openai.com</code> and nowhere else. Get one at
+        <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com/api-keys</a>.
+      </p>
+      <div class="row">
+        <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+        <button id="toggleKey" class="ghost" type="button" title="Show / hide">👁</button>
+        <button id="saveKey" type="button">Save</button>
+        <button id="clearKey" class="ghost" type="button">Clear</button>
+      </div>
+      <p id="keyStatus" class="status" aria-live="polite"></p>
+
+      <details id="settings">
+        <summary>Advanced settings (models &amp; voice)</summary>
+        <div class="settings-grid">
+          <label>Vision model
+            <input id="visionModel" type="text" spellcheck="false" />
+            <span class="hint">Any vision-capable chat model, e.g. <code>gpt-4o-mini</code>.</span>
+          </label>
+          <label>TTS model
+            <select id="ttsModel">
+              <option value="gpt-4o-mini-tts">gpt-4o-mini-tts (newest, steerable)</option>
+              <option value="tts-1">tts-1 (fast)</option>
+              <option value="tts-1-hd">tts-1-hd (higher quality)</option>
+            </select>
+            <input id="ttsModelCustom" type="text" spellcheck="false" placeholder="…or type a custom model id" />
+          </label>
+          <label>Voice
+            <select id="voice"></select>
+          </label>
+          <label>Max characters per audio chunk
+            <input id="maxChars" type="number" min="500" max="4000" step="100" />
+            <span class="hint">Kept under the speech endpoint limit. Text is split on sentence boundaries.</span>
+          </label>
+          <label class="full">Voice instructions <span class="hint">(gpt-4o-mini-tts only)</span>
+            <input id="ttsInstructions" type="text" placeholder="e.g. Read in a calm, clear narrator voice." />
+          </label>
+        </div>
+      </details>
+    </section>
+
+    <!-- ───────────────────────── Upload ───────────────────────── -->
+    <section class="card" id="uploadCard">
+      <h2>2. Add page photos</h2>
+      <div id="dropzone" class="dropzone" tabindex="0" role="button"
+           aria-label="Add photos by clicking or dragging files here">
+        <input id="fileInput" type="file" accept="image/*" multiple hidden />
+        <div class="dz-inner">
+          <div class="dz-icon">📷</div>
+          <p><strong>Tap to choose photos</strong> or drag them here</p>
+          <p class="muted small">JPEG / PNG / WebP. HEIC works on devices whose browser can decode it. Pages are kept in the order you add them.</p>
+        </div>
+      </div>
+      <div class="row actions" id="batchActions" hidden>
+        <button id="transcribeAll" type="button">Transcribe all</button>
+        <button id="generateAll" type="button" class="ghost">Generate all audio</button>
+        <button id="clearAll" type="button" class="ghost danger">Remove all</button>
+        <span id="batchSummary" class="status push-right"></span>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── Pages ───────────────────────── -->
+    <section id="pagesSection" hidden>
+      <h2 class="sec-title">3. Review &amp; listen</h2>
+      <p class="muted">Edit any transcription before (or after) generating audio — OCR is good but not perfect. Errors on one page never block the others.</p>
+      <ol id="pages" class="pages"></ol>
+    </section>
+
+    <div class="footer-space"></div>
+  </main>
+
+  <!-- ───────────────────────── Player ───────────────────────── -->
+  <div id="playerBar" class="player" hidden>
+    <div class="wrap player-inner">
+      <button id="pBigPlay" class="big-play" type="button" title="Play / pause">▶</button>
+      <div class="player-mid">
+        <div id="pNow" class="p-now">Nothing playing</div>
+        <input id="pSeek" class="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek within current segment" />
+        <div class="p-times"><span id="pCur">0:00</span><span id="pDur">0:00</span></div>
+      </div>
+      <div class="player-ctrls">
+        <button id="pPrev" class="ghost" type="button" title="Previous segment">⏮</button>
+        <button id="pNext" class="ghost" type="button" title="Next segment">⏭</button>
+        <select id="pSpeed" class="speed" title="Playback speed">
+          <option value="0.75">0.75×</option>
+          <option value="1" selected>1×</option>
+          <option value="1.25">1.25×</option>
+          <option value="1.5">1.5×</option>
+          <option value="1.75">1.75×</option>
+          <option value="2">2×</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <audio id="audio" preload="auto"></audio>
+  <div id="toast" class="toast" aria-live="assertive" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
