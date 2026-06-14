@@ -58,6 +58,10 @@
     'emphasis as plain text. ' +
     'The ONLY change you may make: rejoin a single word that is hyphenated ' +
     'across a line break (e.g. "trans-\\ncription" → "transcription"). ' +
+    'Transcribe ONLY text that is actually visible and legible. Never guess ' +
+    'at or invent words, names, sentences, or punctuation you cannot clearly ' +
+    'read — if a passage is illegible, write [illegible] rather than ' +
+    'fabricating plausible text. ' +
     'Keep paragraph breaks. Output ONLY the body text — no commentary, ' +
     'titles, or markdown. Omit running headers, footers, isolated page ' +
     'numbers, and image captions unless they are part of the prose. If two ' +
