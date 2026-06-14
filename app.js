@@ -26,8 +26,9 @@
     SPEECH_ENDPOINT: 'https://api.openai.com/v1/audio/speech',
     GOOGLE_VISION_ENDPOINT: 'https://vision.googleapis.com/v1/images:annotate',
     OCR_ENGINE: 'openai',  // 'openai' | 'google'
-    // gpt-4o (not -mini) — mini misreads non-English / handwriting badly.
-    VISION_MODEL: 'gpt-4o',
+    // gpt-5.5 tested cleanest on dense non-English OCR (faithful AND well-ordered).
+    // Fall back to gpt-4o / gpt-4.1 if a key lacks access; never use -mini (misreads).
+    VISION_MODEL: 'gpt-5.5',
     OCR_LANG: '',          // optional language hint, e.g. 'Ukrainian'
     TTS_MODEL: 'gpt-4o-mini-tts',
     VOICE: 'alloy',
@@ -504,6 +505,31 @@
     return isFinite(n) ? n * 1000 : 0;
   }
 
+  // Chat completion that downgrades params on HTTP 400 so older models
+  // (temperature 0 + max_tokens) and newer ones (gpt-5.x, which reject those
+  // and want max_completion_tokens / default temperature) both work.
+  async function chatComplete(messages) {
+    const variants = [
+      { temperature: 0, max_tokens: 4096 },
+      { temperature: 0, max_completion_tokens: 4096 },
+      { max_completion_tokens: 4096 },
+      {},
+    ];
+    let lastErr;
+    for (const extra of variants) {
+      try {
+        const data = await apiFetch(CONFIG.CHAT_ENDPOINT,
+          Object.assign({ model: settings.visionModel, messages }, extra));
+        return data?.choices?.[0]?.message?.content?.trim() || '';
+      } catch (e) {
+        lastErr = e;
+        if (e instanceof ApiError && e.status === 400) continue; // try simpler params
+        throw e;
+      }
+    }
+    throw lastErr;
+  }
+
   async function transcribeImage(dataUrl) {
     const lang = (settings.ocrLang || '').trim();
     const sys = lang
@@ -514,19 +540,13 @@
     const userText = lang
       ? 'Transcribe this ' + lang + ' book page verbatim — exact wording, no paraphrasing.'
       : 'Transcribe this book page verbatim — exact wording, no paraphrasing.';
-    const data = await apiFetch(CONFIG.CHAT_ENDPOINT, {
-      model: settings.visionModel,
-      temperature: 0,
-      max_tokens: 4096,
-      messages: [
-        { role: 'system', content: sys },
-        { role: 'user', content: [
-          { type: 'text', text: userText },
-          { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
-        ] },
-      ],
-    });
-    const text = data?.choices?.[0]?.message?.content?.trim() || '';
+    const text = await chatComplete([
+      { role: 'system', content: sys },
+      { role: 'user', content: [
+        { type: 'text', text: userText },
+        { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
+      ] },
+    ]);
     if (!text) throw new ApiError('Model returned no text for this page.', 0);
     return text === '[no readable text]' ? '' : text;
   }
@@ -550,19 +570,14 @@
   async function reconcileText(aGoogle, bOpenai) {
     const lang = (settings.ocrLang || '').trim();
     const sys = RECONCILE_SYSTEM + (lang ? '\nThe page is written in ' + lang + '.' : '');
-    const data = await apiFetch(CONFIG.CHAT_ENDPOINT, {
-      model: settings.visionModel,
-      temperature: 0,
-      max_tokens: 4096,
-      messages: [
-        { role: 'system', content: sys },
-        { role: 'user', content:
-          'SOURCE A (OCR engine):\n' + aGoogle +
-          '\n\n----------\n\nSOURCE B (vision model):\n' + bOpenai +
-          '\n\nReconciled page text:' },
-      ],
-    });
-    return data?.choices?.[0]?.message?.content?.trim() || bOpenai;
+    const text = await chatComplete([
+      { role: 'system', content: sys },
+      { role: 'user', content:
+        'SOURCE A (OCR engine):\n' + aGoogle +
+        '\n\n----------\n\nSOURCE B (vision model):\n' + bOpenai +
+        '\n\nReconciled page text:' },
+    ]);
+    return text || bOpenai;
   }
 
   // Run both engines, then reconcile. Degrades to whichever single engine
