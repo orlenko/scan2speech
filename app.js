@@ -71,6 +71,28 @@
     'pages are visible, transcribe the left page fully, then the right. If ' +
     'the image has no readable text, output exactly: [no readable text].';
 
+  const RECONCILE_SYSTEM =
+    'You are reconciling two independent transcriptions of the SAME single ' +
+    'book page into one correct text.\n' +
+    'SOURCE A is from a dedicated OCR engine: its individual words and spelling ' +
+    'are usually correct, but its line / reading order may be scrambled and it ' +
+    'may contain stray dashes or lines split in odd places.\n' +
+    'SOURCE B is from a vision language model: its reading order and sentence ' +
+    'flow are usually correct, but it sometimes misreads or invents words, ' +
+    'names, or whole phrases.\n' +
+    'Produce the single correct page text:\n' +
+    '- Use SOURCE A as the authority for the exact words, spelling, names and ' +
+    'numbers.\n' +
+    '- Use SOURCE B as the guide for reading order, paragraph flow, and for ' +
+    'joining fragmented lines into sentences.\n' +
+    '- When the two disagree on a word, prefer SOURCE A unless A is clearly ' +
+    'garbled at that spot.\n' +
+    '- CRITICAL: do NOT introduce any word, name, number, or sentence that does ' +
+    'not appear in at least one of the two sources. Do not summarize, ' +
+    'paraphrase, translate, or add anything of your own.\n' +
+    '- Rejoin words hyphenated across line breaks. Keep natural paragraph ' +
+    'breaks. Output ONLY the reconciled page text — no commentary.';
+
   /* ───────────────────────────── state ───────────────────────────── */
   let settings = loadSettings();
   let pages = [];          // ordered page objects
@@ -292,7 +314,7 @@
     let s = {};
     try { s = JSON.parse(localStorage.getItem(LS_SETTINGS) || '{}'); } catch (_) {}
     return {
-      ocrEngine: s.ocrEngine === 'google' ? 'google' : CONFIG.OCR_ENGINE,
+      ocrEngine: (s.ocrEngine === 'google' || s.ocrEngine === 'reconcile') ? s.ocrEngine : CONFIG.OCR_ENGINE,
       visionModel: s.visionModel || CONFIG.VISION_MODEL,
       ocrLang: s.ocrLang != null ? s.ocrLang : CONFIG.OCR_LANG,
       ttsModel: s.ttsModel || CONFIG.TTS_MODEL,
@@ -309,7 +331,7 @@
   function saveSettings() {
     const custom = el.ttsModelCustom.value.trim();
     settings = {
-      ocrEngine: el.ocrEngine.value === 'google' ? 'google' : 'openai',
+      ocrEngine: (el.ocrEngine.value === 'google' || el.ocrEngine.value === 'reconcile') ? el.ocrEngine.value : 'openai',
       visionModel: el.visionModel.value.trim() || CONFIG.VISION_MODEL,
       ocrLang: el.ocrLang.value.trim(),
       ttsModel: custom || el.ttsModel.value,
@@ -361,9 +383,9 @@
   // Show the Google key field only for the Google engine; the OpenAI vision
   // model field only matters for the OpenAI engine.
   function updateEngineUI() {
-    const google = el.ocrEngine.value === 'google';
-    el.googleKeyRow.hidden = !google;
-    el.visionModelRow.style.opacity = google ? '0.5' : '';
+    const engine = el.ocrEngine.value;
+    el.googleKeyRow.hidden = engine === 'openai';      // shown for google + reconcile
+    el.visionModelRow.style.opacity = engine === 'google' ? '0.5' : ''; // unused only for pure google
     refreshGoogleKeyStatus();
   }
 
@@ -522,6 +544,43 @@
     return apiFetch(CONFIG.SPEECH_ENDPOINT, body, true); // → Blob
   }
 
+  // Merge a true-OCR transcript (accurate words) with a vision-model transcript
+  // (accurate reading order) into one corrected text. Output is constrained to
+  // words present in one of the two sources, so it can't re-hallucinate.
+  async function reconcileText(aGoogle, bOpenai) {
+    const lang = (settings.ocrLang || '').trim();
+    const sys = RECONCILE_SYSTEM + (lang ? '\nThe page is written in ' + lang + '.' : '');
+    const data = await apiFetch(CONFIG.CHAT_ENDPOINT, {
+      model: settings.visionModel,
+      temperature: 0,
+      max_tokens: 4096,
+      messages: [
+        { role: 'system', content: sys },
+        { role: 'user', content:
+          'SOURCE A (OCR engine):\n' + aGoogle +
+          '\n\n----------\n\nSOURCE B (vision model):\n' + bOpenai +
+          '\n\nReconciled page text:' },
+      ],
+    });
+    return data?.choices?.[0]?.message?.content?.trim() || bOpenai;
+  }
+
+  // Run both engines, then reconcile. Degrades to whichever single engine
+  // succeeds so a page is never lost.
+  async function transcribeReconcile(base64, dataUrl) {
+    const [g, o] = await Promise.allSettled([
+      getGoogleKey() ? transcribeGoogle(base64)
+        : Promise.reject(new ApiError('No Google Vision key saved.', 0)),
+      transcribeImage(dataUrl),
+    ]);
+    const gv = g.status === 'fulfilled' ? g.value : '';
+    const ov = o.status === 'fulfilled' ? o.value : '';
+    if (gv && ov) return reconcileText(gv, ov);
+    if (ov) { toast('Reconcile: Google OCR unavailable — used OpenAI only.'); return ov; }
+    if (gv) { toast('Reconcile: OpenAI unavailable — used Google only.'); return gv; }
+    throw (o.status === 'rejected' ? o.reason : g.reason);
+  }
+
   // Google Cloud Vision — a true OCR engine (no generative confabulation).
   // Called directly from the browser with the user's own API key.
   async function transcribeGoogle(base64) {
@@ -651,10 +710,11 @@
     setStatus(page, 'transcribing');
     try {
       const text = await ocrLimit(async () => {
-        if (settings.ocrEngine === 'google') {
-          return transcribeGoogle(await blobToBase64(page.jpegBlob));
-        }
-        return transcribeImage(await blobToDataURL(page.jpegBlob));
+        const b64 = await blobToBase64(page.jpegBlob);
+        const dataUrl = 'data:image/jpeg;base64,' + b64;
+        if (settings.ocrEngine === 'google') return transcribeGoogle(b64);
+        if (settings.ocrEngine === 'reconcile') return transcribeReconcile(b64, dataUrl);
+        return transcribeImage(dataUrl);
       });
       page.text = text;
       revokePageAudio(page);

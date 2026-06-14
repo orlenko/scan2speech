@@ -40,8 +40,9 @@
             <select id="ocrEngine">
               <option value="openai">OpenAI vision (generative)</option>
               <option value="google">Google Cloud Vision (true OCR)</option>
+              <option value="reconcile">Both + reconcile (best quality, costs more)</option>
             </select>
-            <span class="hint">Google Vision is a dedicated OCR engine — far less likely to invent text. Needs its own key below.</span>
+            <span class="hint">Reconcile runs Google + OpenAI and merges them with a third pass — needs both keys.</span>
           </label>
           <label>Page language <span class="hint">(optional)</span>
             <input id="ocrLang" type="text" spellcheck="false" placeholder="e.g. Ukrainian or uk — blank to auto-detect" />
