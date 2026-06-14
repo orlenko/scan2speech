@@ -42,6 +42,7 @@
   const getGKey = () => (localStorage.getItem(LS_GKEY) || '').trim();
 
   let bitmap = null;      // decoded source image
+  let work = null;        // working canvas (raw or deskewed) that we crop from
   const results = {};     // label -> text
 
   /* ── image helpers ── */
@@ -56,14 +57,14 @@
       img.src = u;
     });
   }
-  // Encode a (possibly cropped) region of the bitmap to a downscaled JPEG.
+  // Encode a (possibly cropped) region of the working canvas to a downscaled JPEG.
   async function encode(maxDim, crop) {
     const sx = crop ? crop.sx : 0, sy = crop ? crop.sy : 0;
-    const sw = crop ? crop.sw : bitmap.width, sh = crop ? crop.sh : bitmap.height;
+    const sw = crop ? crop.sw : work.width, sh = crop ? crop.sh : work.height;
     const scale = Math.min(1, maxDim / Math.max(sw, sh));
     const cw = Math.max(1, Math.round(sw * scale)), ch = Math.max(1, Math.round(sh * scale));
     const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
-    cv.getContext('2d').drawImage(bitmap, sx, sy, sw, sh, 0, 0, cw, ch);
+    cv.getContext('2d').drawImage(work, sx, sy, sw, sh, 0, 0, cw, ch);
     const blob = await new Promise((r) => cv.toBlob(r, 'image/jpeg', 0.9));
     const dataUrl = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(blob); });
     return { dataUrl, base64: String(dataUrl).slice(String(dataUrl).indexOf(',') + 1) };
@@ -71,14 +72,65 @@
   // N horizontal bands with overlap so no text line is lost at a cut.
   async function slices(n, maxDim) {
     if (n <= 1) return [await encode(maxDim)];
-    const H = bitmap.height, band = H / n, ov = Math.round(band * 0.15);
+    const H = work.height, band = H / n, ov = Math.round(band * 0.15);
     const out = [];
     for (let i = 0; i < n; i++) {
       const sy = Math.max(0, Math.round(i * band) - ov);
       const ey = Math.min(H, Math.round((i + 1) * band) + ov);
-      out.push(await encode(maxDim, { sx: 0, sy, sw: bitmap.width, sh: ey - sy }));
+      out.push(await encode(maxDim, { sx: 0, sy, sw: work.width, sh: ey - sy }));
     }
     return out;
+  }
+
+  /* ── deskew: estimate text-line angle by projection-profile sharpness ──
+   * Binarize a small copy, and for each candidate angle accumulate dark
+   * pixels into sheared rows; the angle whose row histogram has the highest
+   * energy (Σ row²) is the one that best aligns the text lines horizontally. */
+  function estimateSkewDeg(bmp) {
+    const W = Math.min(700, bmp.width), s = W / bmp.width, Hh = Math.round(bmp.height * s);
+    const c = document.createElement('canvas'); c.width = W; c.height = Hh;
+    const cx = c.getContext('2d'); cx.drawImage(bmp, 0, 0, W, Hh);
+    const px = cx.getImageData(0, 0, W, Hh).data;
+    const dark = [];
+    for (let y = 0; y < Hh; y++) for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      if (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114 < 140) dark.push([x - W / 2, y]);
+    }
+    if (dark.length < 50) return 0;
+    let best = 0, bestScore = -1;
+    const off = Math.ceil((W / 2) * Math.tan(8 * Math.PI / 180)) + 1;
+    const nbins = Hh + 2 * off;
+    for (let deg = -8; deg <= 8.0001; deg += 0.25) {
+      const t = Math.tan(deg * Math.PI / 180);
+      const bins = new Float64Array(nbins);
+      for (let k = 0; k < dark.length; k++) {
+        const idx = (dark[k][1] - Math.round(dark[k][0] * t)) + off;
+        if (idx >= 0 && idx < nbins) bins[idx]++;
+      }
+      let score = 0;
+      for (let i = 0; i < nbins; i++) score += bins[i] * bins[i];
+      if (score > bestScore) { bestScore = score; best = deg; }
+    }
+    return best;
+  }
+  // Build the working canvas: raw, or rotated to straighten the text lines.
+  function buildWork(deskew) {
+    if (!deskew) {
+      const c = document.createElement('canvas'); c.width = bitmap.width; c.height = bitmap.height;
+      c.getContext('2d').drawImage(bitmap, 0, 0);
+      return { canvas: c, angle: 0 };
+    }
+    const deg = estimateSkewDeg(bitmap);
+    const rad = -deg * Math.PI / 180; // rotate opposite the detected tilt
+    const cos = Math.abs(Math.cos(rad)), sin = Math.abs(Math.sin(rad));
+    const w = bitmap.width, h = bitmap.height;
+    const nw = Math.ceil(w * cos + h * sin), nh = Math.ceil(w * sin + h * cos);
+    const c = document.createElement('canvas'); c.width = nw; c.height = nh;
+    const cx = c.getContext('2d');
+    cx.fillStyle = '#fff'; cx.fillRect(0, 0, nw, nh);
+    cx.translate(nw / 2, nh / 2); cx.rotate(rad);
+    cx.drawImage(bitmap, -w / 2, -h / 2);
+    return { canvas: c, angle: deg };
   }
 
   /* ── line-level dedup join for sliced output ── */
@@ -194,6 +246,9 @@
     const gLang = mapLang(lang);
     const maxDim = Math.max(768, parseInt($('maxDim').value, 10) || 1568);
     const n = parseInt($('slices').value, 10) || 1;
+    const built = buildWork($('deskew').checked);
+    work = built.canvas;
+    if ($('deskew').checked) $('ocrStatus').textContent = 'Deskew angle: ' + built.angle.toFixed(2) + '° — running…';
     const parts = await slices(n, maxDim);
 
     const jobs = [];
@@ -205,7 +260,7 @@
       if (getKey()) jobs.push(runEngine('OpenAI ' + m, (p) => openaiVision(m, p.dataUrl, lang), parts));
     }
     await Promise.all(jobs);
-    $('ocrStatus').textContent = 'Done.';
+    $('ocrStatus').textContent = 'Done.' + ($('deskew').checked ? ' (deskew ' + built.angle.toFixed(2) + '°)' : '');
     $('runOcr').disabled = false;
   }
 
