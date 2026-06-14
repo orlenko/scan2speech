@@ -24,7 +24,9 @@
   const CONFIG = {
     CHAT_ENDPOINT: 'https://api.openai.com/v1/chat/completions',
     SPEECH_ENDPOINT: 'https://api.openai.com/v1/audio/speech',
-    VISION_MODEL: 'gpt-4o-mini',
+    // gpt-4o (not -mini) — mini misreads non-English / handwriting badly.
+    VISION_MODEL: 'gpt-4o',
+    OCR_LANG: '',          // optional language hint, e.g. 'Ukrainian'
     TTS_MODEL: 'gpt-4o-mini-tts',
     VOICE: 'alloy',
     // Conservative: under the 4096-char tts-1 cap AND well under the
@@ -73,7 +75,7 @@
   const el = {
     apiKey: $('apiKey'), toggleKey: $('toggleKey'), saveKey: $('saveKey'),
     clearKey: $('clearKey'), keyStatus: $('keyStatus'),
-    visionModel: $('visionModel'), ttsModel: $('ttsModel'),
+    visionModel: $('visionModel'), ocrLang: $('ocrLang'), ttsModel: $('ttsModel'),
     ttsModelCustom: $('ttsModelCustom'), voice: $('voice'),
     maxChars: $('maxChars'), ttsInstructions: $('ttsInstructions'),
     dropzone: $('dropzone'), fileInput: $('fileInput'),
@@ -259,6 +261,7 @@
     try { s = JSON.parse(localStorage.getItem(LS_SETTINGS) || '{}'); } catch (_) {}
     return {
       visionModel: s.visionModel || CONFIG.VISION_MODEL,
+      ocrLang: s.ocrLang != null ? s.ocrLang : CONFIG.OCR_LANG,
       ttsModel: s.ttsModel || CONFIG.TTS_MODEL,
       voice: s.voice || CONFIG.VOICE,
       maxChars: clampInt(s.maxChars, 500, 4000, CONFIG.MAX_CHARS),
@@ -274,6 +277,7 @@
     const custom = el.ttsModelCustom.value.trim();
     settings = {
       visionModel: el.visionModel.value.trim() || CONFIG.VISION_MODEL,
+      ocrLang: el.ocrLang.value.trim(),
       ttsModel: custom || el.ttsModel.value,
       voice: el.voice.value,
       maxChars: clampInt(el.maxChars.value, 500, 4000, CONFIG.MAX_CHARS),
@@ -283,6 +287,7 @@
   }
   function hydrateSettingsUI() {
     el.visionModel.value = settings.visionModel;
+    el.ocrLang.value = settings.ocrLang;
     el.maxChars.value = settings.maxChars;
     el.ttsInstructions.value = settings.ttsInstructions;
     // voices dropdown
@@ -426,14 +431,23 @@
   }
 
   async function transcribeImage(dataUrl) {
+    const lang = (settings.ocrLang || '').trim();
+    const sys = lang
+      ? OCR_SYSTEM + ' The page is written in ' + lang + '. Use correct ' +
+        lang + ' spelling and orthography; never transliterate or substitute ' +
+        'words from another language.'
+      : OCR_SYSTEM;
+    const userText = lang
+      ? 'Transcribe this ' + lang + ' book page verbatim — exact wording, no paraphrasing.'
+      : 'Transcribe this book page verbatim — exact wording, no paraphrasing.';
     const data = await apiFetch(CONFIG.CHAT_ENDPOINT, {
       model: settings.visionModel,
       temperature: 0,
       max_tokens: 4096,
       messages: [
-        { role: 'system', content: OCR_SYSTEM },
+        { role: 'system', content: sys },
         { role: 'user', content: [
-          { type: 'text', text: 'Transcribe this book page verbatim — exact wording, no paraphrasing.' },
+          { type: 'text', text: userText },
           { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
         ] },
       ],
@@ -855,7 +869,7 @@
     el.apiKey.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.saveKey.click(); });
 
     // settings (persist on change)
-    [el.visionModel, el.ttsModel, el.ttsModelCustom, el.voice, el.maxChars, el.ttsInstructions]
+    [el.visionModel, el.ocrLang, el.ttsModel, el.ttsModelCustom, el.voice, el.maxChars, el.ttsInstructions]
       .forEach((node) => node.addEventListener('change', saveSettings));
 
     // upload

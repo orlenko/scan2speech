@@ -38,7 +38,11 @@
         <div class="settings-grid">
           <label>Vision model
             <input id="visionModel" type="text" spellcheck="false" />
-            <span class="hint">Any vision-capable chat model, e.g. <code>gpt-4o-mini</code>.</span>
+            <span class="hint">Any vision-capable chat model. <code>gpt-4o</code> is far more accurate on non-English / handwriting than <code>gpt-4o-mini</code>.</span>
+          </label>
+          <label>Page language <span class="hint">(optional)</span>
+            <input id="ocrLang" type="text" spellcheck="false" placeholder="e.g. Ukrainian, French — leave blank to auto-detect" />
+            <span class="hint">A hint that sharpens transcription accuracy.</span>
           </label>
           <label>TTS model
             <select id="ttsModel">
