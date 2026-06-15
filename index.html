@@ -3,9 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="color-scheme" content="dark light" />
+  <meta name="color-scheme" content="light dark" />
   <title>Scan2Speech — photos of book pages → audio</title>
   <meta name="description" content="Turn photos of physical book pages into listenable audio with your own OpenAI API key. No server, no account — runs entirely in your browser." />
+  <script>
+    /* Resolve theme before paint: saved choice → else system preference. */
+    (function () {
+      try {
+        var saved = localStorage.getItem('s2s-theme');
+        var sys = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', saved || sys);
+      } catch (e) {}
+    })();
+  </script>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -16,6 +26,8 @@
         <h1>Scan2Speech</h1>
         <p class="tagline">Snap photos of book pages, listen to them read aloud. Your key, your browser, no server.</p>
       </div>
+      <span class="bookmark-ribbon" aria-hidden="true"></span>
+      <button id="themeToggle" class="ghost icon theme-toggle" type="button" aria-label="Switch theme">🌙</button>
     </div>
   </header>
 
@@ -153,6 +165,28 @@
   <audio id="audio" preload="auto"></audio>
   <div id="toast" class="toast" aria-live="assertive" hidden></div>
 
+  <script>
+    /* Day/night toggle — flips <html data-theme>, persists the choice. */
+    (function () {
+      var btn = document.getElementById('themeToggle');
+      if (!btn) return;
+      var root = document.documentElement;
+      function sync() {
+        var dark = root.getAttribute('data-theme') === 'dark';
+        btn.textContent = dark ? '\u2600\uFE0F' : '\uD83C\uDF19';
+        var label = dark ? 'Switch to day reading' : 'Switch to night reading';
+        btn.setAttribute('aria-label', label);
+        btn.title = label;
+      }
+      sync();
+      btn.addEventListener('click', function () {
+        var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        root.setAttribute('data-theme', next);
+        try { localStorage.setItem('s2s-theme', next); } catch (e) {}
+        sync();
+      });
+    })();
+  </script>
   <script src="app.js"></script>
 </body>
 </html>

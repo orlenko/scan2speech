@@ -11,6 +11,22 @@ No accounts, no backend, no hosted secrets. Publishable as-is to GitHub Pages.
 The dream it serves: *"I want the next hundred pages of this book but no time to
 read them — I'll snap a hundred photos, drop them in, and listen while I drive."*
 
+## Theming (paper-book look + day/night)
+
+- Warm paper-book aesthetic. All theming keys off `<html data-theme="light|dark">`;
+  day is `:root`, night is `:root[data-theme="dark"]`. There is intentionally **no**
+  `prefers-color-scheme` CSS rule.
+- Two tiny inline scripts in `index.html` (the only JS outside `app.js`): a
+  **pre-paint resolver** in `<head>` (sets `data-theme` from `localStorage['s2s-theme']`
+  else the system preference, avoiding a flash) and a **toggle** (`#themeToggle` 🌙/☀️)
+  before `app.js`. `app.js` is untouched by theming.
+- Fonts load from the Google Fonts CDN via `@import` in `styles.css` (Spectral serif
+  for reading/titles, Hanken Grotesk for UI), with full system fallbacks. The page
+  still runs offline/`file://` — fonts just fall back. To go CDN-free, swap the
+  `@import` for self-hosted `@font-face` + `.woff2`.
+- `[hidden] { display: none !important; }` is load-bearing: component rules like
+  `.cam`/`.player` set `display`, which would otherwise override the `hidden` attribute.
+
 ## Hard rules (do not violate)
 
 - **Static only.** Plain `index.html` + `styles.css` + `app.js`. No build step,
