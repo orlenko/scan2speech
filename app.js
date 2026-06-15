@@ -757,22 +757,24 @@
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       toast('This browser has no camera access — use “choose photos” instead.'); return;
     }
-    el.camError.hidden = true;
-    el.cameraOverlay.hidden = false;
+    let stream;
     try {
-      camStream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } },
         audio: false,
       });
     } catch (e) {
-      el.camError.textContent = 'Could not open the camera (' + (e.name || 'denied') +
-        '). Grant camera permission, or close this and use “choose photos”.';
-      el.camError.hidden = false;
+      // Denied/unavailable: stay on the upload screen, don't show a blank overlay.
+      toast('Camera unavailable (' + (e.name || 'permission denied') +
+        '). Use “…or choose existing photos” instead.');
       return;
     }
-    el.camVideo.srcObject = camStream;
+    camStream = stream;
+    el.camError.hidden = true;
+    el.camVideo.srcObject = stream;
     el.camVideo.play().catch(() => {});
     camShots = 0; el.camCount.textContent = '0';
+    el.cameraOverlay.hidden = false; // only after the stream is live
   }
   function closeCamera() {
     if (camStream) { camStream.getTracks().forEach((t) => t.stop()); camStream = null; }
