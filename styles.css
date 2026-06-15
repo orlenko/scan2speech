@@ -153,6 +153,56 @@ summary { cursor: pointer; color: var(--accent); user-select: none; font-size: 0
 .dz-title { margin: 8px 0 4px; font-size: 1.02rem; }
 .dz-inner p { margin: 4px 0; }
 
+/* ── camera ── */
+.cam-open {
+  width: 100%;
+  padding: 14px;
+  font-size: 1.02rem;
+  margin-bottom: 12px;
+  box-shadow: 0 4px 16px rgba(124, 108, 255, 0.32);
+}
+.check { flex-direction: row !important; align-items: center; gap: 8px !important; color: var(--fg) !important; }
+.check input { width: auto; }
+.act-sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 2px; }
+.page-actions .icon { padding: 7px 10px; font-size: 1rem; line-height: 1; }
+
+.cam {
+  position: fixed; inset: 0; z-index: 100;
+  background: #000;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.cam-video { width: 100%; height: 100%; object-fit: contain; }
+.cam-error {
+  position: absolute; top: 16px; left: 16px; right: 16px;
+  background: rgba(40, 20, 24, 0.92); color: #fff;
+  border: 1px solid var(--bad); border-radius: 12px; padding: 12px 14px;
+  font-size: 0.9rem;
+}
+.cam-controls {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; align-items: center; justify-content: center; gap: 28px;
+  padding: 20px 20px calc(28px + env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.55));
+}
+.cam-done {
+  background: rgba(255, 255, 255, 0.16); color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  padding: 10px 18px; border-radius: 999px;
+}
+.cam-done:hover { background: rgba(255, 255, 255, 0.26); }
+.cam-shutter {
+  width: 74px; height: 74px; border-radius: 50%; padding: 0;
+  background: #fff; border: 4px solid rgba(255, 255, 255, 0.55);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.3);
+  transition: transform .1s;
+}
+.cam-shutter:hover { background: #fff; }
+.cam-shutter:active, .cam-shutter.flash { transform: scale(0.9); }
+.cam-count {
+  min-width: 40px; text-align: center; color: #fff; font-weight: 700; font-size: 1.1rem;
+  background: rgba(255, 255, 255, 0.16); border-radius: 999px; padding: 6px 10px;
+}
+
 /* ── batch bar ── */
 .batch-bar { margin-top: 16px; }
 .progress-track {

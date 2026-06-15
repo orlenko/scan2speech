@@ -67,6 +67,7 @@
           <label class="full">Voice instructions <span class="hint">(gpt-4o-mini-tts only)</span>
             <input id="ttsInstructions" type="text" placeholder="e.g. Read in a calm, clear narrator voice." />
           </label>
+          <label class="full check"><input id="autoFix" type="checkbox" /> Auto-straighten &amp; crop new photos <span class="hint">(orient, deskew, trim to text)</span></label>
         </div>
       </details>
     </section>
@@ -77,13 +78,14 @@
         <span class="step">2</span>
         <h2>Add page photos</h2>
       </div>
+      <button id="cameraBtn" type="button" class="cam-open">📷 Take photos with camera</button>
       <div id="dropzone" class="dropzone" tabindex="0" role="button"
            aria-label="Add photos by clicking or dragging files here">
         <input id="fileInput" type="file" accept="image/*" multiple hidden />
         <div class="dz-inner">
-          <div class="dz-icon">📷</div>
-          <p class="dz-title"><strong>Tap to choose photos</strong> or drag them here</p>
-          <p class="muted small">They start transcribing automatically. JPEG / PNG / WebP (HEIC where the browser supports it). Page order is preserved.</p>
+          <div class="dz-icon">🖼️</div>
+          <p class="dz-title"><strong>…or choose existing photos</strong> (or drag them here)</p>
+          <p class="muted small">They start transcribing automatically and are auto-straightened &amp; cropped. JPEG / PNG / WebP (HEIC where the browser supports it). Page order is preserved.</p>
         </div>
       </div>
       <div class="batch-bar" id="batchActions" hidden>
@@ -112,6 +114,17 @@
 
     <div class="footer-space"></div>
   </main>
+
+  <!-- ───────────────────────── Camera ───────────────────────── -->
+  <div id="cameraOverlay" class="cam" hidden>
+    <video id="camVideo" class="cam-video" playsinline autoplay muted></video>
+    <p id="camError" class="cam-error" hidden></p>
+    <div class="cam-controls">
+      <button id="camClose" type="button" class="cam-done">Done</button>
+      <button id="camShutter" type="button" class="cam-shutter" aria-label="Capture photo"></button>
+      <span id="camCount" class="cam-count" title="Photos captured">0</span>
+    </div>
+  </div>
 
   <!-- ───────────────────────── Player ───────────────────────── -->
   <div id="playerBar" class="player" hidden>

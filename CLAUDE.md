@@ -50,8 +50,10 @@ read them — I'll snap a hundred photos, drop them in, and listen while I drive
 | chunking | `splitSentences` (Intl.Segmenter → regex fallback) + `chunkText`. |
 | OCR call | `transcribeImage` (OpenAI vision, verbatim/no-fabricate prompt + language hint) via `chatComplete` (param-downgrade on 400). `apiFetch` auto-retries 429/5xx/network. |
 | TTS calls | `synthesize` (OpenAI `/audio/speech`), `ApiError` mapping. |
-| image prep | `prepareImage`: decode → downscale to `MAX_IMAGE_DIM` (1568px, OpenAI's vision tiling sweet spot) → re-encode JPEG (normalizes formats incl. HEIC where decodable, respects EXIF, shrinks uploads). |
-| persistence | IndexedDB layer (`openDB`/`idbRun`/`savePage`/`saveOrder`/`restorePages`). Per-page records keyed by uuid; order in a tiny `__order__` record so reordering never rewrites blobs. Degrades to in-memory if IDB/quota fails. |
+| camera | In-app capture via `getUserMedia` (`openCamera`/`capturePhoto`/`closeCamera`); each shot → `addSources` (shared by the file picker). |
+| image prep | `buildBase` (decode → downscale to `SRC_DIM` editable base) + `deriveSend` (apply per-page `edit{rotate,autofix}` → downscale to `MAX_IMAGE_DIM` 1568px send image). Edits are non-destructive (kept as `srcBlob` + `edit`); `reprocessPage` re-derives and re-OCRs. |
+| auto-fix | `autoFixToCanvas`: dependency-free best-effort orient (0/90 via projection energy), deskew (`skewFromDark`), crop-to-text (`textBBox`). Conservative; returns input on any trouble; manual rotate is the reliable fallback. |
+| persistence | IndexedDB layer (`openDB`/`idbRun`/`savePage`/`saveOrder`/`restorePages`). Per-page records keyed by uuid store `srcBlob`+`edit`+`jpegBlob`+text+audio; order in a tiny `__order__` record so reordering never rewrites blobs. Degrades to in-memory if IDB/quota fails. |
 | page lifecycle | `addFiles`, `transcribePage`, `generatePageAudio`, batch actions. Concurrency via `pLimit`. |
 | rendering | `renderPage` rebuilds one `<li>`; editing a textarea invalidates that page's audio. |
 | playback | Queue **derived from page order** (`buildQueue`), only `ready` chunks; rebuilt on demand so late pages join while early ones play. |

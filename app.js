@@ -95,6 +95,10 @@
     pBigPlay: $('pBigPlay'), pNow: $('pNow'), pSeek: $('pSeek'),
     pCur: $('pCur'), pDur: $('pDur'), pPrev: $('pPrev'), pNext: $('pNext'),
     pSpeed: $('pSpeed'), toast: $('toast'),
+    cameraBtn: $('cameraBtn'), autoFix: $('autoFix'),
+    cameraOverlay: $('cameraOverlay'), camVideo: $('camVideo'),
+    camShutter: $('camShutter'), camClose: $('camClose'), camCount: $('camCount'),
+    camError: $('camError'),
   };
 
   /* ════════════════════════════ utils ════════════════════════════ */
@@ -192,6 +196,8 @@
       name: page.name,
       text: page.text || '',
       jpegBlob: page.jpegBlob || null,
+      srcBlob: page.srcBlob || null,
+      edit: page.edit || { rotate: 0, autofix: false },
       chunks: page.chunks ? page.chunks.map((c) => ({
         text: c.text,
         status: c.status === 'ready' ? 'ready' : 'pending',
@@ -239,6 +245,8 @@
       const page = {
         id: rec.id, name: rec.name || 'page', status: 'ready',
         text: rec.text || '', error: '', jpegBlob: rec.jpegBlob,
+        srcBlob: rec.srcBlob || rec.jpegBlob, // older records lack a base
+        edit: rec.edit || { rotate: 0, autofix: false },
         thumbUrl: URL.createObjectURL(rec.jpegBlob), chunks: null,
       };
       if (rec.chunks && rec.chunks.length) {
@@ -278,6 +286,7 @@
       voice: s.voice || CONFIG.VOICE,
       maxChars: clampInt(s.maxChars, 500, 4000, CONFIG.MAX_CHARS),
       ttsInstructions: s.ttsInstructions != null ? s.ttsInstructions : CONFIG.TTS_INSTRUCTIONS,
+      autoFix: s.autoFix != null ? !!s.autoFix : true,
     };
     if (migrate) { try { localStorage.setItem(LS_SETTINGS, JSON.stringify(out)); } catch (_) {} }
     return out;
@@ -297,6 +306,7 @@
       voice: el.voice.value,
       maxChars: clampInt(el.maxChars.value, 500, 4000, CONFIG.MAX_CHARS),
       ttsInstructions: el.ttsInstructions.value,
+      autoFix: !!el.autoFix.checked,
     };
     localStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
   }
@@ -305,6 +315,7 @@
     el.ocrLang.value = settings.ocrLang;
     el.maxChars.value = settings.maxChars;
     el.ttsInstructions.value = settings.ttsInstructions;
+    el.autoFix.checked = settings.autoFix;
     // voices dropdown
     el.voice.innerHTML = CONFIG.VOICES
       .map((v) => `<option value="${v}">${v}</option>`).join('');
@@ -522,26 +533,148 @@
       img.src = url;
     });
   }
-  async function prepareImage(file) {
-    let bmp;
-    try { bmp = await loadBitmap(file); }
+  const SRC_DIM = 2200;   // editable base resolution (kept so edits are non-destructive)
+
+  // Decode a File/Blob/Canvas and draw it downscaled (longest side ≤ maxDim).
+  async function toCanvas(src, maxDim) {
+    const bmp = (src instanceof HTMLCanvasElement) ? src : await loadBitmap(src);
+    const w = bmp.width, h = bmp.height;
+    const scale = Math.min(1, maxDim / Math.max(w, h));
+    const cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
+    const c = document.createElement('canvas');
+    c.width = cw; c.height = ch;
+    c.getContext('2d').drawImage(bmp, 0, 0, cw, ch);
+    if (bmp.close) bmp.close();
+    return c;
+  }
+  const canvasToBlob = (c, q) => new Promise((res) => c.toBlob(res, 'image/jpeg', q || CONFIG.JPEG_QUALITY));
+
+  // Rotate by a multiple of 90° into a new canvas.
+  function rotateCanvas(src, deg) {
+    deg = ((deg % 360) + 360) % 360;
+    if (!deg) return src;
+    const swap = (deg === 90 || deg === 270);
+    const c = document.createElement('canvas');
+    c.width = swap ? src.height : src.width;
+    c.height = swap ? src.width : src.height;
+    const ctx = c.getContext('2d');
+    ctx.translate(c.width / 2, c.height / 2);
+    ctx.rotate(deg * Math.PI / 180);
+    ctx.drawImage(src, -src.width / 2, -src.height / 2);
+    return c;
+  }
+  // Rotate by an arbitrary (small) angle, expanding the canvas with a white bg.
+  function rotateFine(src, deg) {
+    const rad = deg * Math.PI / 180;
+    const cos = Math.abs(Math.cos(rad)), sin = Math.abs(Math.sin(rad));
+    const w = src.width, h = src.height;
+    const c = document.createElement('canvas');
+    c.width = Math.ceil(w * cos + h * sin); c.height = Math.ceil(w * sin + h * cos);
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.translate(c.width / 2, c.height / 2); ctx.rotate(rad);
+    ctx.drawImage(src, -w / 2, -h / 2);
+    return c;
+  }
+
+  /* ── dependency-free auto-fix: orient (0/90), deskew, crop to text ── */
+  function analyzeGray(src, maxW) {
+    const s = Math.min(1, maxW / src.width);
+    const w = Math.max(1, Math.round(src.width * s)), h = Math.max(1, Math.round(src.height * s));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const ctx = c.getContext('2d'); ctx.drawImage(src, 0, 0, w, h);
+    const px = ctx.getImageData(0, 0, w, h).data;
+    const lum = new Float32Array(w * h);
+    let sum = 0;
+    for (let i = 0; i < w * h; i++) {
+      const l = px[i * 4] * 0.299 + px[i * 4 + 1] * 0.587 + px[i * 4 + 2] * 0.114;
+      lum[i] = l; sum += l;
+    }
+    const thr = (sum / (w * h)) * 0.72; // dark = well below mean (ink on paper)
+    const dark = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) dark[i] = lum[i] < thr ? 1 : 0;
+    return { dark, w, h };
+  }
+  function projEnergy(dark, w, h, vertical) {
+    let s = 0;
+    if (!vertical) { for (let y = 0; y < h; y++) { let c = 0; for (let x = 0; x < w; x++) c += dark[y * w + x]; s += c * c; } }
+    else { for (let x = 0; x < w; x++) { let c = 0; for (let y = 0; y < h; y++) c += dark[y * w + x]; s += c * c; } }
+    return s;
+  }
+  function skewFromDark(dark, w, h) {
+    const pts = [];
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (dark[y * w + x]) pts.push([x - w / 2, y]);
+    if (pts.length < 60) return 0;
+    const off = Math.ceil((w / 2) * Math.tan(8 * Math.PI / 180)) + 1, nb = h + 2 * off;
+    let best = 0, bestScore = -1;
+    for (let deg = -8; deg <= 8.0001; deg += 0.25) {
+      const t = Math.tan(deg * Math.PI / 180), bins = new Float64Array(nb);
+      for (let k = 0; k < pts.length; k++) { const idx = (pts[k][1] - Math.round(pts[k][0] * t)) + off; if (idx >= 0 && idx < nb) bins[idx]++; }
+      let s = 0; for (let i = 0; i < nb; i++) s += bins[i] * bins[i];
+      if (s > bestScore) { bestScore = s; best = deg; }
+    }
+    return best;
+  }
+  function textBBox(dark, w, h) {
+    const rows = new Float64Array(h), cols = new Float64Array(w);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (dark[y * w + x]) { rows[y]++; cols[x]++; }
+    const rt = 0.02 * w, ct = 0.02 * h;
+    let y0 = 0; while (y0 < h && rows[y0] < rt) y0++;
+    let y1 = h - 1; while (y1 > y0 && rows[y1] < rt) y1--;
+    let x0 = 0; while (x0 < w && cols[x0] < ct) x0++;
+    let x1 = w - 1; while (x1 > x0 && cols[x1] < ct) x1--;
+    if (x1 <= x0 || y1 <= y0) return null;
+    const mx = Math.round(w * 0.03), my = Math.round(h * 0.03);
+    return { x0: Math.max(0, x0 - mx), y0: Math.max(0, y0 - my), x1: Math.min(w, x1 + mx), y1: Math.min(h, y1 + my) };
+  }
+  // Best-effort. Conservative thresholds; returns the input on any trouble.
+  function autoFixToCanvas(src) {
+    try {
+      let base = src;
+      let g = analyzeGray(base, 800);
+      // coarse 0 vs 90: text lines should be horizontal (row energy ≫ col energy)
+      if (projEnergy(g.dark, g.w, g.h, true) > projEnergy(g.dark, g.w, g.h, false) * 1.3) {
+        base = rotateCanvas(base, 90); g = analyzeGray(base, 800);
+      }
+      // fine deskew
+      const deg = skewFromDark(g.dark, g.w, g.h);
+      if (Math.abs(deg) > 0.4 && Math.abs(deg) < 8) { base = rotateFine(base, -deg); g = analyzeGray(base, 800); }
+      // crop to text block (only if it trims a real margin but keeps most of the page)
+      const box = textBBox(g.dark, g.w, g.h);
+      if (box) {
+        const fx = base.width / g.w, fy = base.height / g.h;
+        const sx = box.x0 * fx, sy = box.y0 * fy, sw = (box.x1 - box.x0) * fx, sh = (box.y1 - box.y0) * fy;
+        const area = sw * sh, full = base.width * base.height;
+        if (area < full * 0.97 && area > full * 0.35) {
+          const c = document.createElement('canvas'); c.width = Math.round(sw); c.height = Math.round(sh);
+          c.getContext('2d').drawImage(base, sx, sy, sw, sh, 0, 0, c.width, c.height);
+          base = c;
+        }
+      }
+      return base;
+    } catch (_) { return src; }
+  }
+
+  // Build the editable base blob from any source (decode + downscale to SRC_DIM).
+  async function buildBase(src) {
+    let canvas;
+    try { canvas = await toCanvas(src, SRC_DIM); }
     catch (_) {
       throw new Error('Could not read this image. If it is a HEIC photo, your ' +
         'browser cannot decode it — re-save as JPEG or PNG.');
     }
-    const w = bmp.width, h = bmp.height;
-    const scale = Math.min(1, CONFIG.MAX_IMAGE_DIM / Math.max(w, h));
-    const cw = Math.max(1, Math.round(w * scale));
-    const ch = Math.max(1, Math.round(h * scale));
-    const canvas = document.createElement('canvas');
-    canvas.width = cw; canvas.height = ch;
-    canvas.getContext('2d').drawImage(bmp, 0, 0, cw, ch);
-    if (bmp.close) bmp.close();
-    const blob = await new Promise((res) =>
-      canvas.toBlob(res, 'image/jpeg', CONFIG.JPEG_QUALITY));
-    if (!blob) throw new Error('Could not process this image.');
-    return { blob, thumbUrl: URL.createObjectURL(blob) };
+    return canvasToBlob(canvas, 0.92);
   }
+  // Derive the image actually sent + shown, applying the page's edits.
+  async function deriveSend(srcBlob, edit) {
+    let c = await toCanvas(srcBlob, SRC_DIM);
+    if (edit && edit.rotate) c = rotateCanvas(c, edit.rotate);
+    if (edit && edit.autofix) c = autoFixToCanvas(c);
+    if (Math.max(c.width, c.height) > CONFIG.MAX_IMAGE_DIM) c = await toCanvas(c, CONFIG.MAX_IMAGE_DIM);
+    const jpegBlob = await canvasToBlob(c, CONFIG.JPEG_QUALITY);
+    return { jpegBlob, thumbUrl: URL.createObjectURL(jpegBlob) };
+  }
+
 
   /* ════════════════════════ page lifecycle ════════════════════════ */
   function setStatus(page, status, error) {
@@ -551,37 +684,120 @@
     updateBatchUI();
   }
 
-  async function addFiles(fileList) {
-    const files = [...fileList].filter((f) => f.type.startsWith('image/') ||
-      /\.(jpe?g|png|webp|heic|heif)$/i.test(f.name));
-    if (!files.length) { toast('No images found in that selection.'); return; }
+  // Add pages from any sources: [{ data: File|Blob, name }]. Used by both the
+  // file picker and the in-app camera.
+  function addSources(sources, opts) {
+    opts = opts || {};
+    if (!sources.length) return;
     const hadNone = pages.length === 0;
     const haveKey = !!getKey();
+    const autofix = opts.autofix != null ? opts.autofix : !!settings.autoFix;
     el.pagesSection.hidden = false;
-    for (const file of files) {
+    for (const s of sources) {
       const page = {
-        id: uid(), name: file.name, status: 'loading',
-        thumbUrl: '', jpegBlob: null, text: '', error: '', chunks: null,
+        id: uid(), name: s.name || 'photo.jpg', status: 'loading',
+        thumbUrl: '', srcBlob: null, jpegBlob: null, text: '', error: '', chunks: null,
+        edit: { rotate: 0, autofix: autofix },
       };
       pages.push(page);
       renderPage(page);
-      // Prepare (downscale/encode) immediately so the user sees a thumbnail,
-      // then auto-start transcription (the "drop photos and listen" flow).
-      page._prep = prepareImage(file).then(({ blob, thumbUrl }) => {
-        page.jpegBlob = blob; page.thumbUrl = thumbUrl;
+      // Decode → editable base → send image (thumbnail), then auto-transcribe.
+      page._prep = (async () => {
+        page.srcBlob = await buildBase(s.data);
+        const { jpegBlob, thumbUrl } = await deriveSend(page.srcBlob, page.edit);
+        page.jpegBlob = jpegBlob; page.thumbUrl = thumbUrl;
         setStatus(page, 'ready');
         savePage(page);
         if (haveKey) startTranscribe(page);
-      }).catch((e) => setStatus(page, 'error', e.message));
+      })().catch((e) => setStatus(page, 'error', e.message || 'Could not read image.'));
     }
     saveOrder();
     updateBatchUI();
-    // Make it obvious something happened: reveal the pages and report.
-    if (hadNone) requestAnimationFrame(() =>
+    if (hadNone && !opts.quiet) requestAnimationFrame(() =>
       el.pagesSection.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-    toast(files.length + ' page' + (files.length === 1 ? '' : 's') + ' added' +
+    if (!opts.quiet) toast(sources.length + ' page' + (sources.length === 1 ? '' : 's') + ' added' +
       (haveKey ? ' — transcribing…' : '. Add your API key to transcribe.'));
   }
+  function addFiles(fileList) {
+    const files = [...fileList].filter((f) => f.type.startsWith('image/') ||
+      /\.(jpe?g|png|webp|heic|heif)$/i.test(f.name));
+    if (!files.length) { toast('No images found in that selection.'); return; }
+    addSources(files.map((f) => ({ data: f, name: f.name })));
+  }
+
+  // Re-derive the send image from the editable base after a rotate/auto-fix;
+  // the image changed, so the old transcription/audio are dropped and we re-OCR.
+  async function reprocessPage(page) {
+    if (!page.srcBlob) return;
+    setStatus(page, 'loading');
+    try {
+      if (page.thumbUrl) URL.revokeObjectURL(page.thumbUrl);
+      const { jpegBlob, thumbUrl } = await deriveSend(page.srcBlob, page.edit);
+      page.jpegBlob = jpegBlob; page.thumbUrl = thumbUrl;
+      revokePageAudio(page); page.chunks = null; page.text = ''; page._txp = null;
+      setStatus(page, 'ready');
+      savePage(page);
+      if (getKey()) startTranscribe(page);
+    } catch (e) { setStatus(page, 'error', e.message || 'Could not process image.'); }
+  }
+  function rotatePage(page, delta) {
+    page.edit = page.edit || { rotate: 0, autofix: false };
+    page.edit.rotate = (((page.edit.rotate || 0) + delta) % 360 + 360) % 360;
+    reprocessPage(page);
+  }
+  function toggleAutofix(page) {
+    page.edit = page.edit || { rotate: 0, autofix: false };
+    page.edit.autofix = !page.edit.autofix;
+    reprocessPage(page);
+  }
+
+  /* ════════════════════════ in-app camera ════════════════════════ */
+  let camStream = null, camShots = 0;
+  async function openCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      toast('This browser has no camera access — use “choose photos” instead.'); return;
+    }
+    el.camError.hidden = true;
+    el.cameraOverlay.hidden = false;
+    try {
+      camStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } },
+        audio: false,
+      });
+    } catch (e) {
+      el.camError.textContent = 'Could not open the camera (' + (e.name || 'denied') +
+        '). Grant camera permission, or close this and use “choose photos”.';
+      el.camError.hidden = false;
+      return;
+    }
+    el.camVideo.srcObject = camStream;
+    el.camVideo.play().catch(() => {});
+    camShots = 0; el.camCount.textContent = '0';
+  }
+  function closeCamera() {
+    if (camStream) { camStream.getTracks().forEach((t) => t.stop()); camStream = null; }
+    el.camVideo.srcObject = null;
+    el.cameraOverlay.hidden = true;
+    if (camShots) {
+      toast(camShots + ' photo' + (camShots === 1 ? '' : 's') + ' added' +
+        (getKey() ? ' — transcribing…' : '. Add your API key to transcribe.'));
+      if (!el.pagesSection.hidden) el.pagesSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+  async function capturePhoto() {
+    const v = el.camVideo;
+    if (!v.videoWidth) { toast('Camera still warming up…'); return; }
+    const c = document.createElement('canvas');
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    c.getContext('2d').drawImage(v, 0, 0);
+    const blob = await canvasToBlob(c, 0.95);
+    camShots++;
+    el.camCount.textContent = String(camShots);
+    el.camShutter.classList.add('flash');
+    setTimeout(() => el.camShutter.classList.remove('flash'), 160);
+    addSources([{ data: blob, name: 'photo-' + camShots + '.jpg' }], { quiet: true });
+  }
+
 
   const ocrLimit = pLimit(CONFIG.OCR_CONCURRENCY);
   const ttsLimit = pLimit(CONFIG.TTS_CONCURRENCY);
@@ -712,6 +928,8 @@
 
     const canTranscribe = !!page.jpegBlob && page.status !== 'transcribing' && page.status !== 'loading';
     const canAudio = !!(page.text || '').trim() && page.status !== 'generating';
+    const canEdit = !!page.srcBlob && page.status !== 'loading';
+    const autofixed = !!(page.edit && page.edit.autofix);
     const chunkInfo = page.chunks
       ? `<span class="chips">${page.chunks.filter((c) => c.status === 'ready').length}/${page.chunks.length} audio segments</span>`
       : '';
@@ -730,6 +948,10 @@
           ? `<textarea class="page-text" placeholder="Transcribed text will appear here — edit freely.">${esc(page.text)}</textarea>`
           : ''}
         <div class="page-actions">
+          <button class="act-rotl ghost icon" title="Rotate left" ${canEdit ? '' : 'disabled'}>⟲</button>
+          <button class="act-rotr ghost icon" title="Rotate right" ${canEdit ? '' : 'disabled'}>⟳</button>
+          <button class="act-autofix ghost" title="Auto-orient, straighten &amp; crop to text" ${canEdit ? '' : 'disabled'}>${autofixed ? 'Auto-fix ✓' : 'Auto-fix'}</button>
+          <span class="act-sep"></span>
           <button class="act-transcribe ghost" ${canTranscribe ? '' : 'disabled'}>${page.text ? 'Re-transcribe' : 'Transcribe'}</button>
           <button class="act-audio" ${canAudio ? '' : 'disabled'}>${page.chunks ? 'Regenerate audio' : 'Generate audio'}</button>
           ${page.chunks && page.chunks.some((c) => c.status === 'ready')
@@ -754,6 +976,9 @@
         saveDebounced(page);
       });
     }
+    const rl = li.querySelector('.act-rotl'); if (rl) rl.onclick = () => rotatePage(page, -90);
+    const rr = li.querySelector('.act-rotr'); if (rr) rr.onclick = () => rotatePage(page, 90);
+    const af = li.querySelector('.act-autofix'); if (af) af.onclick = () => toggleAutofix(page);
     li.querySelector('.act-transcribe').onclick = () => startTranscribe(page);
     li.querySelector('.act-audio').onclick = () => generatePageAudio(page);
     const playBtn = li.querySelector('.act-play');
@@ -943,8 +1168,13 @@
     el.apiKey.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.saveKey.click(); });
 
     // settings (persist on change)
-    [el.visionModel, el.ocrLang, el.ttsModel, el.ttsModelCustom, el.voice, el.maxChars, el.ttsInstructions]
+    [el.visionModel, el.ocrLang, el.ttsModel, el.ttsModelCustom, el.voice, el.maxChars, el.ttsInstructions, el.autoFix]
       .forEach((node) => node.addEventListener('change', saveSettings));
+
+    // camera
+    el.cameraBtn.onclick = openCamera;
+    el.camShutter.onclick = capturePhoto;
+    el.camClose.onclick = closeCamera;
 
     // upload
     el.dropzone.onclick = () => el.fileInput.click();
